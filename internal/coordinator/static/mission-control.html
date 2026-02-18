@@ -197,6 +197,9 @@ header h1 span{color:var(--blue);font-weight:400;margin-left:6px;font-size:14px}
 .free-table tr:first-child td{font-weight:600;color:var(--text);background:var(--bg3)}
 .free-table td strong{color:var(--text)}
 
+.agent-section{margin-top:8px;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm)}
+.agent-section-title{font-size:11px;font-weight:700;color:var(--purple);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px}
+
 .archive-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:0;margin-top:20px}
 .archive-header{
   padding:12px 16px;border-bottom:1px solid var(--border);
@@ -428,19 +431,27 @@ function render(data){
 
     if (a.phase) o += '<span class="agent-phase">' + esc(a.phase) + '</span>';
 
-    if (a.free_text && a.free_text.indexOf('### BUG') > -1){
-      o += renderBugs(a);
-    } else if (a.free_text && a.free_text.indexOf('PR Sequence') > -1){
-      o += renderMergePlan(a);
-    } else {
-      if (a.items && a.items.length > 0){
-        o += '<ul class="agent-items">';
-        a.items.forEach(function(it){ o += '<li>' + esc(it) + '</li>'; });
-        o += '</ul>';
-      }
-      if (a.free_text){
-        o += renderFreeText(a.free_text);
-      }
+    if (a.items && a.items.length > 0){
+      o += '<ul class="agent-items">';
+      a.items.forEach(function(it){ o += '<li>' + esc(it) + '</li>'; });
+      o += '</ul>';
+    }
+
+    if (a.sections && a.sections.length > 0){
+      a.sections.forEach(function(sec){
+        o += '<div class="agent-section">';
+        o += '<div class="agent-section-title">' + esc(sec.title || '') + '</div>';
+        if (sec.items && sec.items.length > 0){
+          o += '<ul class="agent-items">';
+          sec.items.forEach(function(it){ o += '<li>' + esc(it) + '</li>'; });
+          o += '</ul>';
+        }
+        o += '</div>';
+      });
+    }
+
+    if (a.free_text){
+      o += renderFreeText(a.free_text);
     }
 
     if (a.next_steps) o += '<div class="agent-next"><strong>Next </strong>' + esc(a.next_steps) + '</div>';
