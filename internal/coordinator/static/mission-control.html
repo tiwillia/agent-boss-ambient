@@ -1111,6 +1111,7 @@ function editAgent(e, agentName){
   }
   var currentPrompt = agent && agent.task_prompt ? agent.task_prompt : '';
   var currentRepos = agent && agent.repo_list ? agent.repo_list.join('\n') : '';
+  var currentHeartbeat = agent && agent.heartbeat_interval ? agent.heartbeat_interval : 0;
 
   var overlay = document.createElement('div');
   overlay.id = 'launch-modal-overlay';
@@ -1120,6 +1121,8 @@ function editAgent(e, agentName){
     + '<div style="font-size:11px;color:var(--text2);margin-bottom:16px">Update task prompt and repository URLs for <strong style="color:var(--blue)">' + esc(agentName) + '</strong></div>'
     + '<div style="margin-bottom:10px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Repository URLs <span style="color:var(--text3)">(optional, one per line)</span></label>'
     + '<textarea id="edit-repo" rows="3" placeholder="https://github.com/org/repo1\nhttps://github.com/org/repo2" style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none;resize:vertical;font-family:monospace">' + esc(currentRepos) + '</textarea></div>'
+    + '<div style="margin-bottom:10px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Heartbeat Check-in <span style="color:var(--text3)">(minutes, 0 = disabled)</span></label>'
+    + '<input type="number" id="edit-heartbeat" min="0" max="1440" placeholder="0" value="' + currentHeartbeat + '" style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none" /></div>'
     + '<div style="margin-bottom:16px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Task Prompt <span style="color:var(--text3)">(optional)</span></label>'
     + '<textarea id="edit-prompt" rows="5" placeholder="Describe the task for this agent..." style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none;resize:vertical;font-family:inherit;line-height:1.5">' + esc(currentPrompt) + '</textarea></div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end">'
@@ -1133,13 +1136,14 @@ function editAgent(e, agentName){
     var prompt = (document.getElementById('edit-prompt') || {}).value || '';
     var repoText = (document.getElementById('edit-repo') || {}).value || '';
     var repos = repoText.split(/[\n,]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+    var heartbeat = parseInt((document.getElementById('edit-heartbeat') || {}).value || '0', 10);
     closeLaunchModal();
     broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-info', msg:'Updating ' + agentName + '...'});
     renderBroadcastLog();
     fetch('/spaces/' + encodeURIComponent(SPACE) + '/edit/' + encodeURIComponent(agentName), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({task_prompt: prompt, repo_list: repos})
+      body: JSON.stringify({task_prompt: prompt, repo_list: repos, heartbeat_interval: heartbeat})
     }).then(function(r){
       if (!r.ok) return r.text().then(function(t){ throw new Error(t); });
       broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-ok', msg:agentName + ' updated'});

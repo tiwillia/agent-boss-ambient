@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,6 +48,7 @@ type Server struct {
 	EventLog        []string
 	eventMu         sync.Mutex
 	stopLiveness    chan struct{}
+	stopHeartbeat   chan struct{}
 	sseClients      map[*sseClient]struct{}
 	sseMu           sync.Mutex
 	interrupts      *InterruptLedger
@@ -85,6 +87,7 @@ func NewServer(port, dataDir string) *Server {
 		acpConfig:       acpCfg,
 		spaces:          make(map[string]*KnowledgeSpace),
 		stopLiveness:    make(chan struct{}),
+		stopHeartbeat:   make(chan struct{}),
 		sseClients:      make(map[*sseClient]struct{}),
 		interrupts:      NewInterruptLedger(dataDir),
 		broadcastLast:   make(map[string]time.Time),
@@ -174,6 +177,7 @@ func (s *Server) Start() error {
 	}()
 
 	go s.livenessLoop()
+	go s.heartbeatLoop()
 
 	return nil
 }
@@ -188,6 +192,7 @@ func (s *Server) Stop() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	close(s.stopLiveness)
+	close(s.stopHeartbeat)
 	err := s.httpServer.Shutdown(ctx)
 	s.running = false
 	s.logEvent("coordinator stopped")
@@ -1445,8 +1450,9 @@ func (s *Server) handleEditAgent(w http.ResponseWriter, r *http.Request, spaceNa
 		return
 	}
 	var payload struct {
-		TaskPrompt string   `json:"task_prompt"`
-		RepoList   []string `json:"repo_list"`
+		TaskPrompt        string   `json:"task_prompt"`
+		RepoList          []string `json:"repo_list"`
+		HeartbeatInterval *int     `json:"heartbeat_interval,omitempty"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
@@ -1457,6 +1463,9 @@ func (s *Server) handleEditAgent(w http.ResponseWriter, r *http.Request, spaceNa
 	agent := ks.Agents[canonical]
 	agent.TaskPrompt = payload.TaskPrompt
 	agent.RepoList = payload.RepoList
+	if payload.HeartbeatInterval != nil {
+		agent.HeartbeatInterval = *payload.HeartbeatInterval
+	}
 	agent.UpdatedAt = time.Now().UTC()
 	ks.UpdatedAt = time.Now().UTC()
 	if err := s.saveSpace(ks); err != nil {
@@ -1694,6 +1703,71 @@ func (s *Server) livenessLoop() {
 		case <-ticker.C:
 			s.checkAllSessionLiveness()
 		}
+	}
+}
+
+func (s *Server) heartbeatLoop() {
+	// Check heartbeat intervals every 60 seconds
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopHeartbeat:
+			return
+		case <-ticker.C:
+			s.checkHeartbeats()
+		}
+	}
+}
+
+func (s *Server) checkHeartbeats() {
+	if !acpAvailable(s.acpConfig) {
+		return
+	}
+	s.mu.RLock()
+	type heartbeatCheck struct {
+		space, agent   string
+		interval       int
+		lastUpdate     time.Time
+		acpSessionID   string
+	}
+	var checks []heartbeatCheck
+	now := time.Now().UTC()
+	for spaceName, ks := range s.spaces {
+		for agentName, agent := range ks.Agents {
+			if agent.HeartbeatInterval > 0 && agent.ACPSessionID != "" {
+				checks = append(checks, heartbeatCheck{
+					space:        spaceName,
+					agent:        agentName,
+					interval:     agent.HeartbeatInterval,
+					lastUpdate:   agent.UpdatedAt,
+					acpSessionID: agent.ACPSessionID,
+				})
+			}
+		}
+	}
+	s.mu.RUnlock()
+
+	for _, check := range checks {
+		elapsed := now.Sub(check.lastUpdate)
+		threshold := time.Duration(check.interval) * time.Minute
+		if elapsed >= threshold {
+			s.sendHeartbeatCheckIn(check.space, check.agent, check.acpSessionID)
+		}
+	}
+}
+
+func (s *Server) sendHeartbeatCheckIn(spaceName, agentName, sessionID string) {
+	if s.bossExternalURL == "" {
+		return
+	}
+	message := fmt.Sprintf("BOSS CHECK-IN: Read the blackboard at %s/spaces/%s/raw then POST your current status following the protocol. Include status, summary, branch, pr, items, next_steps. Resume your previous work after.",
+		s.bossExternalURL, url.PathEscape(spaceName))
+
+	if err := acpSendMessage(s.acpConfig, sessionID, message); err != nil {
+		s.logEvent(fmt.Sprintf("[%s/%s] heartbeat check-in failed: %v", spaceName, agentName, err))
+	} else {
+		s.logEvent(fmt.Sprintf("[%s/%s] heartbeat check-in sent (interval: %dmin)", spaceName, agentName, 0))
 	}
 }
 
