@@ -29,6 +29,11 @@ type sseClient struct {
 	space string
 }
 
+const (
+	// broadcastCooldown is the minimum time between broadcasts for a given space.
+	broadcastCooldown = 60 * time.Second
+)
+
 type Server struct {
 	port            string
 	dataDir         string
@@ -45,6 +50,8 @@ type Server struct {
 	sseClients      map[*sseClient]struct{}
 	sseMu           sync.Mutex
 	interrupts      *InterruptLedger
+	broadcastLast   map[string]time.Time // space → last broadcast time
+	broadcastMu     sync.Mutex
 }
 
 func NewServer(port, dataDir string) *Server {
@@ -80,6 +87,7 @@ func NewServer(port, dataDir string) *Server {
 		stopLiveness:    make(chan struct{}),
 		sseClients:      make(map[*sseClient]struct{}),
 		interrupts:      NewInterruptLedger(dataDir),
+		broadcastLast:   make(map[string]time.Time),
 	}
 }
 
@@ -1059,9 +1067,33 @@ func (s *Server) handleIgnition(w http.ResponseWriter, r *http.Request, spaceNam
 	fmt.Fprint(w, s.buildIgnition(spaceName, agentName))
 }
 
+// tryAcquireBroadcast checks if a broadcast is allowed for the given key
+// (space name or space/agent). Returns true and records the timestamp if
+// the cooldown has elapsed; returns false and the remaining wait time otherwise.
+func (s *Server) tryAcquireBroadcast(key string) (bool, time.Duration) {
+	s.broadcastMu.Lock()
+	defer s.broadcastMu.Unlock()
+	now := time.Now()
+	if last, ok := s.broadcastLast[key]; ok {
+		remaining := broadcastCooldown - now.Sub(last)
+		if remaining > 0 {
+			return false, remaining
+		}
+	}
+	s.broadcastLast[key] = now
+	return true, 0
+}
+
 func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request, spaceName string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ok, remaining := s.tryAcquireBroadcast(spaceName)
+	if !ok {
+		s.logEvent(fmt.Sprintf("[%s] broadcast rejected: cooldown %s remaining", spaceName, remaining.Round(time.Second)))
+		http.Error(w, fmt.Sprintf("broadcast cooldown: retry after %s", remaining.Round(time.Second)), http.StatusTooManyRequests)
 		return
 	}
 
@@ -1078,6 +1110,14 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request, spaceNa
 func (s *Server) handleSingleBroadcast(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	key := spaceName + "/" + agentName
+	ok, remaining := s.tryAcquireBroadcast(key)
+	if !ok {
+		s.logEvent(fmt.Sprintf("[%s/%s] check-in rejected: cooldown %s remaining", spaceName, agentName, remaining.Round(time.Second)))
+		http.Error(w, fmt.Sprintf("check-in cooldown: retry after %s", remaining.Round(time.Second)), http.StatusTooManyRequests)
 		return
 	}
 
