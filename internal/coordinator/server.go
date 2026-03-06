@@ -452,6 +452,13 @@ func (s *Server) handleSpaceRoute(w http.ResponseWriter, r *http.Request) {
 		} else {
 			http.Error(w, "agent name required", http.StatusBadRequest)
 		}
+	case "edit":
+		if len(parts) == 3 {
+			agentName := strings.TrimRight(parts[2], "/")
+			s.handleEditAgent(w, r, spaceName, agentName)
+		} else {
+			http.Error(w, "agent name required", http.StatusBadRequest)
+		}
 	case "delete":
 		if len(parts) == 3 {
 			agentName := strings.TrimRight(parts[2], "/")
@@ -1261,12 +1268,16 @@ func (s *Server) handleLaunchAgent(w http.ResponseWriter, r *http.Request, space
 	s.mu.Lock()
 	if ks.Agents[canonical] == nil {
 		ks.Agents[canonical] = &AgentUpdate{
-			Status:    StatusIdle,
-			Summary:   canonical + ": ACP session launched",
-			UpdatedAt: time.Now().UTC(),
+			Status:     StatusIdle,
+			Summary:    canonical + ": ACP session launched",
+			TaskPrompt: taskPrompt,
+			RepoList:   payload.Repos,
+			UpdatedAt:  time.Now().UTC(),
 		}
 	}
 	ks.Agents[canonical].ACPSessionID = sessionID
+	ks.Agents[canonical].TaskPrompt = taskPrompt
+	ks.Agents[canonical].RepoList = payload.Repos
 	ks.UpdatedAt = time.Now().UTC()
 	s.saveSpace(ks)
 	s.mu.Unlock()
@@ -1367,6 +1378,60 @@ func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request, space
 	s.broadcastSSE(spaceName, "agent_removed", string(sseData))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "agent": canonical, "session_id": sessionID})
+}
+
+func (s *Server) handleEditAgent(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ks, ok := s.getSpace(spaceName)
+	if !ok {
+		http.Error(w, fmt.Sprintf("space %q not found", spaceName), http.StatusNotFound)
+		return
+	}
+	s.mu.RLock()
+	canonical := resolveAgentName(ks, agentName)
+	_, exists := ks.Agents[canonical]
+	s.mu.RUnlock()
+	if !exists {
+		http.Error(w, "agent not found: "+agentName, http.StatusNotFound)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	var payload struct {
+		TaskPrompt string   `json:"task_prompt"`
+		RepoList   []string `json:"repo_list"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	agent := ks.Agents[canonical]
+	agent.TaskPrompt = payload.TaskPrompt
+	agent.RepoList = payload.RepoList
+	agent.UpdatedAt = time.Now().UTC()
+	ks.UpdatedAt = time.Now().UTC()
+	if err := s.saveSpace(ks); err != nil {
+		s.mu.Unlock()
+		http.Error(w, fmt.Sprintf("save: %v", err), http.StatusInternalServerError)
+		return
+	}
+	s.mu.Unlock()
+
+	s.logEvent(fmt.Sprintf("[%s/%s] agent details updated", spaceName, canonical))
+	sseData, _ := json.Marshal(map[string]string{"space": spaceName, "agent": canonical})
+	s.broadcastSSE(spaceName, "agent_updated", string(sseData))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "updated", "agent": canonical})
 }
 
 func (s *Server) handleAgentMetrics(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
