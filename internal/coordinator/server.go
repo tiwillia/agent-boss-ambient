@@ -445,6 +445,13 @@ func (s *Server) handleSpaceRoute(w http.ResponseWriter, r *http.Request) {
 		} else {
 			http.Error(w, "agent name required", http.StatusBadRequest)
 		}
+	case "stop":
+		if len(parts) == 3 {
+			agentName := strings.TrimRight(parts[2], "/")
+			s.handleStopAgent(w, r, spaceName, agentName)
+		} else {
+			http.Error(w, "agent name required", http.StatusBadRequest)
+		}
 	case "delete":
 		if len(parts) == 3 {
 			agentName := strings.TrimRight(parts[2], "/")
@@ -1258,6 +1265,52 @@ func (s *Server) handleLaunchAgent(w http.ResponseWriter, r *http.Request, space
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"session_id": sessionID, "agent": canonical, "status": "launching"})
+}
+
+func (s *Server) handleStopAgent(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ks, ok := s.getSpace(spaceName)
+	if !ok {
+		http.Error(w, fmt.Sprintf("space %q not found", spaceName), http.StatusNotFound)
+		return
+	}
+	s.mu.RLock()
+	canonical := resolveAgentName(ks, agentName)
+	agent, exists := ks.Agents[canonical]
+	var sessionID string
+	if exists {
+		sessionID = agent.ACPSessionID
+	}
+	s.mu.RUnlock()
+	if !exists {
+		http.Error(w, "agent not found: "+agentName, http.StatusNotFound)
+		return
+	}
+	if sessionID != "" && acpAvailable(s.acpConfig) {
+		if err := acpStopSession(s.acpConfig, sessionID); err != nil {
+			http.Error(w, "stop session: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	s.mu.Lock()
+	agent.Phase = "idle"
+	agent.UpdatedAt = time.Now().UTC()
+	ks.Agents[canonical] = agent
+	ks.UpdatedAt = time.Now().UTC()
+	if err := s.saveSpace(ks); err != nil {
+		s.mu.Unlock()
+		http.Error(w, fmt.Sprintf("save: %v", err), http.StatusInternalServerError)
+		return
+	}
+	s.mu.Unlock()
+	s.logEvent(fmt.Sprintf("[%s/%s] agent stopped: %s", spaceName, canonical, sessionID))
+	sseData, _ := json.Marshal(map[string]string{"space": spaceName, "agent": canonical})
+	s.broadcastSSE(spaceName, "agent_stopped", string(sseData))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "agent": canonical, "session_id": sessionID})
 }
 
 func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
