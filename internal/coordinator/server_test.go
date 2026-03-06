@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1047,5 +1048,809 @@ func TestDeleteSpaceCleansUpFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(mdPath); !os.IsNotExist(err) {
 		t.Error("expected md file to be deleted")
+	}
+}
+
+func TestHandleAgentMetrics(t *testing.T) {
+	// Mock ACP server that returns metrics
+	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "/metrics") {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"total_tokens":     10000,
+				"input_tokens":     5000,
+				"output_tokens":    5000,
+				"duration_seconds": 250.5,
+				"tool_calls":       25,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer acpSrv.Close()
+
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	srv.acpConfig = testACPConfig(acpSrv.URL)
+	base := serverBaseURL(srv)
+
+	// Create an agent with an ACP session
+	resp := postJSON(t, base+"/spaces/myspace/agent/TestAgent", AgentUpdate{
+		Status:       StatusActive,
+		Summary:      "testing metrics",
+		ACPSessionID: "sess-metrics-1",
+	})
+	resp.Body.Close()
+
+	// Get metrics for the agent using correct route: /spaces/{space}/metrics/{agentName}
+	code, body := getBody(t, base+"/spaces/myspace/metrics/TestAgent")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", code, body)
+	}
+
+	var metrics map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &metrics); err != nil {
+		t.Fatalf("parse metrics: %v", err)
+	}
+	if metrics["total_tokens"].(float64) != 10000 {
+		t.Errorf("total_tokens = %v, want 10000", metrics["total_tokens"])
+	}
+	if metrics["tool_calls"].(float64) != 25 {
+		t.Errorf("tool_calls = %v, want 25", metrics["tool_calls"])
+	}
+}
+
+func TestHandleAgentTranscript(t *testing.T) {
+	// Mock ACP server that returns transcript
+	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "/transcript") {
+			format := r.URL.Query().Get("format")
+			w.WriteHeader(http.StatusOK)
+			if format == "text" {
+				w.Write([]byte("User: hello\nAssistant: hi there"))
+			} else {
+				w.Write([]byte(`{"messages":[{"role":"user","content":"hello"}]}`))
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer acpSrv.Close()
+
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	srv.acpConfig = testACPConfig(acpSrv.URL)
+	base := serverBaseURL(srv)
+
+	// Create an agent with an ACP session
+	resp := postJSON(t, base+"/spaces/myspace/agent/TestAgent", AgentUpdate{
+		Status:       StatusActive,
+		Summary:      "testing transcript",
+		ACPSessionID: "sess-transcript-1",
+	})
+	resp.Body.Close()
+
+	// Get transcript (default json format) using correct route: /spaces/{space}/transcript/{agentName}
+	code, body := getBody(t, base+"/spaces/myspace/transcript/TestAgent")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", code, body)
+	}
+	if !strings.Contains(body, "messages") {
+		t.Errorf("transcript should contain 'messages', got: %s", body)
+	}
+
+	// Get transcript (text format)
+	code, body = getBody(t, base+"/spaces/myspace/transcript/TestAgent?format=text")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", code, body)
+	}
+	if !strings.Contains(body, "User: hello") {
+		t.Errorf("transcript should contain 'User: hello', got: %s", body)
+	}
+}
+
+func TestHandleDeleteAgent(t *testing.T) {
+	// Mock ACP server that handles session deletion
+	var deleteCalled bool
+	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "DELETE" && strings.Contains(r.URL.Path, "/sessions/") {
+			deleteCalled = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer acpSrv.Close()
+
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	srv.acpConfig = testACPConfig(acpSrv.URL)
+	base := serverBaseURL(srv)
+
+	// Create an agent with an ACP session
+	resp := postJSON(t, base+"/spaces/myspace/agent/TestAgent", AgentUpdate{
+		Status:       StatusActive,
+		Summary:      "to be deleted",
+		ACPSessionID: "sess-delete-1",
+	})
+	resp.Body.Close()
+
+	// Delete the agent using correct route: /spaces/{space}/delete/{agentName}
+	req, _ := http.NewRequest(http.MethodPost, base+"/spaces/myspace/delete/TestAgent", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Verify the ACP session was deleted
+	if !deleteCalled {
+		t.Error("expected ACP session delete to be called")
+	}
+
+	// Verify the agent was removed from the space
+	var result map[string]string
+	json.NewDecoder(resp.Body).Decode(&result)
+	if result["status"] != "deleted" {
+		t.Errorf("status = %q, want deleted", result["status"])
+	}
+	if result["agent"] != "Testagent" {
+		t.Errorf("agent = %q, want Testagent", result["agent"])
+	}
+
+	// Verify agent no longer exists - try to get the deleted agent's metrics (should fail)
+	code, _ := getBody(t, base+"/spaces/myspace/metrics/TestAgent")
+	if code != http.StatusNotFound {
+		t.Errorf("expected 404 for deleted agent metrics, got %d", code)
+	}
+}
+
+func TestClientFetchSpace(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create a space with an agent
+	resp := postJSON(t, base+"/spaces/testspace/agent/Agent1", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "working on something",
+		Branch:  "feature-x",
+	})
+	resp.Body.Close()
+
+	// Use client to fetch the space
+	client := NewClient(base, "testspace")
+	space, err := client.FetchSpace()
+	if err != nil {
+		t.Fatalf("FetchSpace: %v", err)
+	}
+	if space == nil {
+		t.Fatal("expected space, got nil")
+	}
+	if space.Name != "testspace" {
+		t.Errorf("space.Name = %q, want testspace", space.Name)
+	}
+	if len(space.Agents) != 1 {
+		t.Errorf("len(space.Agents) = %d, want 1", len(space.Agents))
+	}
+}
+
+func TestClientGetSessionStatus(t *testing.T) {
+	// Mock ACP server
+	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "/sessions/sess-1") {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"id": "sess-1", "status": "running"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer acpSrv.Close()
+
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	srv.acpConfig = testACPConfig(acpSrv.URL)
+	base := serverBaseURL(srv)
+
+	// Create an agent with ACP session
+	postJSON(t, base+"/spaces/sessionspace/agent/Agent1", AgentUpdate{
+		Status:       StatusActive,
+		Summary:      "has session",
+		ACPSessionID: "sess-1",
+	}).Body.Close()
+
+	// Get session status
+	client := NewClient(base, "sessionspace")
+	statuses, err := client.GetSessionStatus()
+	if err != nil {
+		t.Fatalf("GetSessionStatus: %v", err)
+	}
+	if len(statuses) == 0 {
+		t.Fatal("expected at least 1 status")
+	}
+	found := false
+	for _, st := range statuses {
+		if st.Agent == "Agent1" && st.ACPSessionID == "sess-1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected to find Agent1 with session sess-1")
+	}
+}
+
+func TestClientTriggerBroadcast(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create a space
+	postJSON(t, base+"/spaces/broadcastspace/agent/Agent1", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "waiting for broadcast",
+	}).Body.Close()
+
+	// Trigger broadcast
+	client := NewClient(base, "broadcastspace")
+	result, err := client.TriggerBroadcast()
+	if err != nil {
+		t.Fatalf("TriggerBroadcast: %v", err)
+	}
+	if result == "" {
+		t.Error("expected non-empty result from broadcast")
+	}
+}
+
+func TestHandleSpaceRawEdgeCases(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create space with agent first
+	postJSON(t, base+"/spaces/testrawspace/agent/Agent1", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "test",
+	}).Body.Close()
+
+	// Test raw endpoint
+	code, body := getBody(t, base+"/spaces/testrawspace/raw")
+	if code != http.StatusOK {
+		t.Errorf("expected 200 for space raw, got %d", code)
+	}
+	if !strings.Contains(body, "testrawspace") {
+		t.Errorf("raw should contain space name, got: %s", body)
+	}
+
+	// Test contracts endpoint
+	code, body = getBody(t, base+"/spaces/testrawspace/contracts")
+	if code != http.StatusOK {
+		t.Errorf("expected 200 for contracts, got %d", code)
+	}
+}
+
+func TestHandleSpaceArchive(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create a space
+	postJSON(t, base+"/spaces/archivespace/agent/Agent1", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "Agent 1 summary",
+	}).Body.Close()
+
+	// POST archive content
+	req, _ := http.NewRequest(http.MethodPost, base+"/spaces/archivespace/archive",
+		strings.NewReader("# Archive\nCompleted work:\n- Task 1\n- Task 2"))
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for archive POST, got %d", resp.StatusCode)
+	}
+
+	// GET archive
+	code, body := getBody(t, base+"/spaces/archivespace/archive")
+	if code != http.StatusOK {
+		t.Errorf("expected 200 for archive GET, got %d: %s", code, body)
+	}
+	if !strings.Contains(body, "Completed work") {
+		t.Errorf("archive should contain posted content, got: %s", body)
+	}
+}
+
+func TestSpaceContractsEndpoint(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create space
+	postJSON(t, base+"/spaces/contracttest/agent/Agent1", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "test",
+	}).Body.Close()
+
+	// POST to contracts to update
+	req, _ := http.NewRequest(http.MethodPost, base+"/spaces/contracttest/contracts", strings.NewReader("# New Contract\nTest content"))
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for contract update, got %d", resp.StatusCode)
+	}
+
+	// Verify contract was updated
+	code, body := getBody(t, base+"/spaces/contracttest/contracts")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if !strings.Contains(body, "New Contract") {
+		t.Errorf("contracts should contain 'New Contract', got: %s", body)
+	}
+}
+
+func TestAgentStatusEmojis(t *testing.T) {
+	tests := []struct {
+		status AgentStatus
+		emoji  string
+	}{
+		{StatusActive, "\U0001f7e2"},
+		{StatusIdle, "\u23f8\ufe0f"},
+		{StatusBlocked, "\U0001f534"},
+		{StatusDone, "\u2705"},
+		{"invalid", "❓"},
+	}
+
+	for _, tt := range tests {
+		got := tt.status.Emoji()
+		if got != tt.emoji {
+			t.Errorf("status %q: emoji = %q, want %q", tt.status, got, tt.emoji)
+		}
+	}
+}
+
+func TestHandleAgentMetricsErrorCases(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Test without ACP config (should return 503)
+	srv.acpConfig = nil
+	postJSON(t, base+"/spaces/noacp/agent/Agent1", AgentUpdate{
+		Status:       StatusActive,
+		Summary:      "test",
+		ACPSessionID: "sess-1",
+	}).Body.Close()
+
+	code, body := getBody(t, base+"/spaces/noacp/metrics/Agent1")
+	if code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 without ACP config, got %d: %s", code, body)
+	}
+}
+
+func TestHandleAgentTranscriptErrorCases(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create agent without ACP session
+	postJSON(t, base+"/spaces/nosession/agent/Agent1", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "no session",
+	}).Body.Close()
+
+	// Mock ACP
+	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer acpSrv.Close()
+	srv.acpConfig = testACPConfig(acpSrv.URL)
+
+	// Try to get transcript without session (should return 400)
+	code, body := getBody(t, base+"/spaces/nosession/transcript/Agent1")
+	if code != http.StatusBadRequest {
+		t.Errorf("expected 400 for agent without session, got %d: %s", code, body)
+	}
+}
+
+func TestHandleDeleteAgentNotFound(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create a space
+	postJSON(t, base+"/spaces/deletetest/agent/Agent1", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "exists",
+	}).Body.Close()
+
+	// Try to delete non-existent agent
+	req, _ := http.NewRequest(http.MethodPost, base+"/spaces/deletetest/delete/NonExistent", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 404 for non-existent agent, got %d: %s", resp.StatusCode, string(body))
+	}
+}
+
+func TestListSpaceNames(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create multiple spaces
+	postJSON(t, base+"/spaces/list1/agent/A1", AgentUpdate{Status: StatusActive, Summary: "a1"}).Body.Close()
+	postJSON(t, base+"/spaces/list2/agent/A2", AgentUpdate{Status: StatusActive, Summary: "a2"}).Body.Close()
+
+	// Test list endpoint
+	code, body := getBody(t, base+"/spaces")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+
+	var spaces []SpaceSummary
+	if err := json.Unmarshal([]byte(body), &spaces); err != nil {
+		t.Fatalf("parse spaces: %v", err)
+	}
+
+	if len(spaces) < 2 {
+		t.Errorf("expected at least 2 spaces, got %d", len(spaces))
+	}
+}
+
+func TestACPDeleteSessionNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "DELETE" && strings.Contains(r.URL.Path, "/sessions/notfound") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	cfg := testACPConfig(srv.URL)
+	// Should not return error for 404 (already deleted)
+	if err := acpDeleteSession(cfg, "notfound"); err != nil {
+		t.Errorf("acpDeleteSession should not error on 404, got: %v", err)
+	}
+}
+
+func TestACPLabelSession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PATCH" && strings.Contains(r.URL.Path, "/v1/sessions/sess-label") {
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body)
+			if labels, ok := body["labels"].(map[string]interface{}); ok {
+				if labels["test-key"] == "test-value" {
+					w.WriteHeader(http.StatusOK)
+					json.NewEncoder(w).Encode(map[string]string{"id": "sess-label"})
+					return
+				}
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	cfg := testACPConfig(srv.URL)
+	err := acpLabelSession(cfg, "sess-label", map[string]string{"test-key": "test-value"})
+	if err != nil {
+		t.Fatalf("acpLabelSession: %v", err)
+	}
+}
+
+func TestClientLaunchAgent(t *testing.T) {
+	// Mock ACP server
+	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "/v1/sessions") {
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"id": "new-session-123"})
+			return
+		}
+		if r.Method == "PATCH" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"id": "new-session-123"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer acpSrv.Close()
+
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	srv.acpConfig = testACPConfig(acpSrv.URL)
+	base := serverBaseURL(srv)
+
+	// Create a space first
+	postJSON(t, base+"/spaces/launchspace/agent/Launcher", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "ready to launch",
+	}).Body.Close()
+
+	// Launch an agent
+	client := NewClient(base, "launchspace")
+	sessionID, err := client.LaunchAgent("NewAgent", "Do some work", []string{"https://github.com/test/repo"})
+	if err != nil {
+		t.Fatalf("LaunchAgent: %v", err)
+	}
+	if sessionID != "new-session-123" {
+		t.Errorf("sessionID = %q, want new-session-123", sessionID)
+	}
+}
+
+func TestHandleBroadcast(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create a space with agents
+	postJSON(t, base+"/spaces/broadcasttest/agent/Agent1", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "ready",
+	}).Body.Close()
+
+	// Trigger broadcast
+	req, _ := http.NewRequest(http.MethodPost, base+"/spaces/broadcasttest/broadcast", nil)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Broadcast should be accepted
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 202 or 200, got %d: %s", resp.StatusCode, string(body))
+	}
+}
+
+func TestHandleSingleBroadcast(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create a space with an agent
+	postJSON(t, base+"/spaces/singlecast/agent/Agent1", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "ready",
+	}).Body.Close()
+
+	// Trigger single agent broadcast
+	req, _ := http.NewRequest(http.MethodPost, base+"/spaces/singlecast/broadcast/Agent1", nil)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Broadcast should be accepted
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 202 or 200, got %d: %s", resp.StatusCode, string(body))
+	}
+}
+
+func TestHandleRoot(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Test root endpoint
+	code, body := getBody(t, base+"/")
+	if code != http.StatusOK {
+		t.Errorf("expected 200 for root, got %d", code)
+	}
+	// Root should return something (likely HTML dashboard or redirect)
+	if len(body) == 0 {
+		t.Error("expected non-empty response from root")
+	}
+}
+
+func TestNewClientDefaults(t *testing.T) {
+	// Test with empty space name (should default to DefaultSpaceName)
+	client := NewClient("http://localhost:8899", "")
+	if client.space != DefaultSpaceName {
+		t.Errorf("expected default space name %q, got %q", DefaultSpaceName, client.space)
+	}
+
+	// Test with specific space
+	client2 := NewClient("http://localhost:8899", "myspace")
+	if client2.space != "myspace" {
+		t.Errorf("expected space 'myspace', got %q", client2.space)
+	}
+}
+
+func TestServerRecentEvents(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+
+	// Server logs events, check that we can retrieve them
+	events := srv.RecentEvents(10)
+	// Should be an array (might be empty or have startup events)
+	if events == nil {
+		t.Error("expected non-nil events")
+	}
+}
+
+func TestSpaceJSON(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create a space
+	postJSON(t, base+"/spaces/jsontest/agent/Agent1", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "testing",
+		Branch:  "feat/test",
+		PR:      "#123",
+	}).Body.Close()
+
+	// Get space as JSON with Accept header
+	req, _ := http.NewRequest(http.MethodGet, base+"/spaces/jsontest", nil)
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var space KnowledgeSpace
+	if err := json.NewDecoder(resp.Body).Decode(&space); err != nil {
+		t.Fatalf("decode space: %v", err)
+	}
+
+	if space.Name != "jsontest" {
+		t.Errorf("space.Name = %q, want jsontest", space.Name)
+	}
+	if len(space.Agents) == 0 {
+		t.Error("expected at least one agent")
+	}
+}
+
+func TestClientListSpaces(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create multiple spaces
+	postJSON(t, base+"/spaces/space1/agent/A1", AgentUpdate{Status: StatusActive, Summary: "a1"}).Body.Close()
+	postJSON(t, base+"/spaces/space2/agent/A2", AgentUpdate{Status: StatusActive, Summary: "a2"}).Body.Close()
+	postJSON(t, base+"/spaces/space3/agent/A3", AgentUpdate{Status: StatusActive, Summary: "a3"}).Body.Close()
+
+	// Use client to list spaces
+	client := NewClient(base, "")
+	spaces, err := client.ListSpaces()
+	if err != nil {
+		t.Fatalf("ListSpaces: %v", err)
+	}
+	if len(spaces) < 3 {
+		t.Errorf("expected at least 3 spaces, got %d", len(spaces))
+	}
+
+	// Verify expected spaces are present
+	found := make(map[string]bool)
+	for _, s := range spaces {
+		found[s.Name] = true
+	}
+	for _, expected := range []string{"space1", "space2", "space3"} {
+		if !found[expected] {
+			t.Errorf("expected to find space %q in list", expected)
+		}
+	}
+}
+
+func TestClientFetchMarkdown(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create a space
+	postJSON(t, base+"/spaces/mdspace/agent/Writer", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "Writing markdown",
+		Items:   []string{"- Task 1", "- Task 2"},
+	}).Body.Close()
+
+	// Fetch markdown
+	client := NewClient(base, "mdspace")
+	md, err := client.FetchMarkdown()
+	if err != nil {
+		t.Fatalf("FetchMarkdown: %v", err)
+	}
+	if md == "" {
+		t.Error("expected non-empty markdown")
+	}
+	if !strings.Contains(md, "mdspace") {
+		t.Errorf("markdown should contain space name, got: %s", md)
+	}
+	if !strings.Contains(md, "Writing markdown") {
+		t.Errorf("markdown should contain summary, got: %s", md)
+	}
+}
+
+func TestClientFetchAgent(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create an agent
+	postJSON(t, base+"/spaces/agentspace/agent/MyAgent", AgentUpdate{
+		Status:  StatusBlocked,
+		Summary: "Waiting for input",
+		Branch:  "fix-123",
+		PR:      "#456",
+	}).Body.Close()
+
+	// Fetch the agent
+	client := NewClient(base, "agentspace")
+	agent, err := client.FetchAgent("MyAgent")
+	if err != nil {
+		t.Fatalf("FetchAgent: %v", err)
+	}
+	if agent == nil {
+		t.Fatal("expected agent, got nil")
+	}
+	if agent.Status != StatusBlocked {
+		t.Errorf("agent.Status = %q, want %q", agent.Status, StatusBlocked)
+	}
+	if agent.Summary != "Waiting for input" {
+		t.Errorf("agent.Summary = %q, want 'Waiting for input'", agent.Summary)
+	}
+	if agent.Branch != "fix-123" {
+		t.Errorf("agent.Branch = %q, want fix-123", agent.Branch)
+	}
+}
+
+func TestClientFetchIgnition(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+	base := serverBaseURL(srv)
+
+	// Create a space with an agent
+	postJSON(t, base+"/spaces/ignitionspace/agent/TestAgent", AgentUpdate{
+		Status:  StatusActive,
+		Summary: "ready for ignition",
+	}).Body.Close()
+
+	// Fetch ignition
+	client := NewClient(base, "ignitionspace")
+	ignition, err := client.FetchIgnition("TestAgent")
+	if err != nil {
+		t.Fatalf("FetchIgnition: %v", err)
+	}
+	if ignition == "" {
+		t.Error("expected non-empty ignition text")
+	}
+	if !strings.Contains(ignition, "TestAgent") {
+		t.Errorf("ignition should contain agent name, got: %s", ignition)
 	}
 }
