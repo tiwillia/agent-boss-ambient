@@ -1110,7 +1110,7 @@ function editAgent(e, agentName){
     }
   }
   var currentPrompt = agent && agent.task_prompt ? agent.task_prompt : '';
-  var currentRepos = agent && agent.repo_list ? agent.repo_list.join('\n') : '';
+  var currentRepos = agent && Array.isArray(agent.repo_list) ? agent.repo_list.join('\n') : '';
 
   var overlay = document.createElement('div');
   overlay.id = 'launch-modal-overlay';
