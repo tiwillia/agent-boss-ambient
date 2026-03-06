@@ -428,6 +428,7 @@ header h1 span{color:var(--blue);font-weight:400;margin-left:6px;font-size:14px}
       <span id="agent-count"></span>
       <span id="last-update"></span>
       <button class="btn btn-primary btn-sm" onclick="showCreateSessionModal()" style="font-size:11px;padding:4px 12px">+ New Session</button>
+      <button id="stop-all-btn" class="btn btn-sm" onclick="stopAllAgents()" style="font-size:11px;padding:4px 12px;background:rgba(255,159,64,.08);border:1px solid rgba(255,159,64,.25);color:var(--orange);display:none">Stop All</button>
       <button id="delete-space-btn" class="btn btn-sm" onclick="showDeleteSpaceModal()" style="font-size:11px;padding:4px 12px;background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.25);color:var(--red);display:none">Delete Space</button>
     </div>
   </div>
@@ -746,6 +747,25 @@ function updateDeleteSpaceBtn(agentCount){
   }
 }
 
+function updateStopAllBtn(data){
+  var btn = document.getElementById('stop-all-btn');
+  if (!btn) return;
+  if (!data || !data.agents) {
+    btn.style.display = 'none';
+    return;
+  }
+  var runningCount = Object.keys(data.agents).filter(function(name){
+    var agent = data.agents[name];
+    return agent && agent.phase === 'running';
+  }).length;
+  if (runningCount > 0) {
+    btn.style.display = '';
+    btn.title = 'Stop all ' + runningCount + ' running agent(s)';
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
 function showDeleteSpaceModal(){
   if (!SPACE) return;
   closeLaunchModal();
@@ -921,7 +941,7 @@ function renderSessionTable(sessionData){
       h += '<tr>';
       h += '<td class="ov-poke" style="white-space:nowrap">';
       h += '<button class="btn-ov-poke" data-agent="' + esc(t.agent) + '" onclick="event.stopPropagation();pokeAgent(\'' + esc(t.agent).replace(/'/g,"\\'") + '\', this)" title="Check in ' + esc(t.agent) + '">&#x21bb;</button>';
-      if (isRunning) h += ' <button class="btn-ov-poke" style="color:var(--red);border-color:rgba(248,81,73,.3)" onclick="deleteAgent(event,\'' + esc(t.agent).replace(/'/g,"\\'") + '\')" title="Delete ' + esc(t.agent) + '">&#x25A0;</button>';
+      if (isRunning) h += ' <button class="btn-ov-poke" style="color:var(--orange);border-color:rgba(255,159,64,.3)" onclick="stopAgent(event,\'' + esc(t.agent).replace(/'/g,"\\'") + '\')" title="Stop ' + esc(t.agent) + '">&#x25A0;</button>';
       h += '</td>';
       h += '<td style="color:#fff;font-weight:600">' + esc(t.agent) + '</td>';
       h += '<td><span class="session-dot ' + dotCls + '"></span>' + esc(phase) + '</td>';
@@ -955,6 +975,81 @@ function toggleAgentMenu(e, btn){
   if (!wasOpen) menu.classList.add('open');
 }
 document.addEventListener('click', function(){ document.querySelectorAll('.agent-menu.open').forEach(function(m){ m.classList.remove('open'); }); });
+
+function stopAgent(e, agentName){
+  e.stopPropagation();
+  document.querySelectorAll('.agent-menu.open').forEach(function(m){ m.classList.remove('open'); });
+  closeLaunchModal();
+  var overlay = document.createElement('div');
+  overlay.id = 'launch-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:24px;width:400px;max-width:90vw">'
+    + '<div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:4px">Stop Agent</div>'
+    + '<div style="font-size:11px;color:var(--text2);margin-bottom:16px">Are you sure you want to stop <strong style="color:var(--orange)">' + esc(agentName) + '</strong>? This will stop its ACP session but keep the agent on the board.</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+    + '<button onclick="closeLaunchModal()" style="padding:7px 16px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text2);font-size:12px;cursor:pointer">Cancel</button>'
+    + '<button id="stop-confirm" style="padding:7px 16px;background:rgba(255,159,64,.12);border:1px solid rgba(255,159,64,.4);border-radius:6px;color:var(--orange);font-size:12px;font-weight:600;cursor:pointer">Stop</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+  launchModal = overlay;
+  overlay.addEventListener('click', function(ev){ if (ev.target === overlay) closeLaunchModal(); });
+  overlay.querySelector('#stop-confirm').onclick = function(){
+    closeLaunchModal();
+    broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-info', msg:'Stopping ' + agentName + '...'});
+    renderBroadcastLog();
+    fetch('/spaces/' + encodeURIComponent(SPACE) + '/stop/' + encodeURIComponent(agentName), {method:'POST'}).then(function(r){
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t); });
+      broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-ok', msg:agentName + ' stopped'});
+      renderBroadcastLog();
+      setTimeout(function(){ loadSpace(SPACE); }, 500);
+    }).catch(function(err){
+      broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-err', msg:agentName + ' stop failed: ' + err.message});
+      renderBroadcastLog();
+    });
+  };
+}
+
+function stopAllAgents(){
+  if (!cachedData || !cachedData.agents) return;
+  var runningAgents = Object.keys(cachedData.agents).filter(function(name){
+    var agent = cachedData.agents[name];
+    return agent && agent.phase === 'running';
+  });
+  if (runningAgents.length === 0) {
+    broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-info', msg:'No running agents to stop'});
+    renderBroadcastLog();
+    return;
+  }
+  var overlay = document.createElement('div');
+  overlay.id = 'launch-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:24px;width:400px;max-width:90vw">'
+    + '<div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:4px">Stop All Agents</div>'
+    + '<div style="font-size:11px;color:var(--text2);margin-bottom:16px">Are you sure you want to stop all <strong style="color:var(--orange)">' + runningAgents.length + ' running agent(s)</strong>? This will stop their ACP sessions but keep them on the board.</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+    + '<button onclick="closeLaunchModal()" style="padding:7px 16px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text2);font-size:12px;cursor:pointer">Cancel</button>'
+    + '<button id="stop-all-confirm" style="padding:7px 16px;background:rgba(255,159,64,.12);border:1px solid rgba(255,159,64,.4);border-radius:6px;color:var(--orange);font-size:12px;font-weight:600;cursor:pointer">Stop All</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+  launchModal = overlay;
+  overlay.addEventListener('click', function(ev){ if (ev.target === overlay) closeLaunchModal(); });
+  overlay.querySelector('#stop-all-confirm').onclick = function(){
+    closeLaunchModal();
+    broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-info', msg:'Stopping ' + runningAgents.length + ' agent(s)...'});
+    renderBroadcastLog();
+    var promises = runningAgents.map(function(agentName){
+      return fetch('/spaces/' + encodeURIComponent(SPACE) + '/stop/' + encodeURIComponent(agentName), {method:'POST'});
+    });
+    Promise.all(promises).then(function(){
+      broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-ok', msg:'All agents stopped'});
+      renderBroadcastLog();
+      setTimeout(function(){ loadSpace(SPACE); }, 500);
+    }).catch(function(err){
+      broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-err', msg:'Stop all failed: ' + err.message});
+      renderBroadcastLog();
+    });
+  };
+}
 
 function deleteAgent(e, agentName){
   e.stopPropagation();
@@ -1066,6 +1161,7 @@ function renderConsole(data, sessionData, eventLog){
   document.getElementById('agent-count').innerHTML = dot + names.length + ' agents';
   document.getElementById('last-update').textContent = 'Updated ' + new Date(data.updated_at).toLocaleString();
   updateDeleteSpaceBtn(names.length);
+  updateStopAllBtn(data);
 
   var logEl = document.getElementById('event-log');
   if (logEl) logEl.scrollTop = logEl.scrollHeight;
@@ -1140,6 +1236,7 @@ function renderBoard(data, sessionData, eventLog, interruptMetrics, interruptLog
   document.getElementById('agent-count').innerHTML = dot + names.length + ' agents';
   document.getElementById('last-update').textContent = 'Updated ' + new Date(data.updated_at).toLocaleString();
   updateDeleteSpaceBtn(names.length);
+  updateStopAllBtn(data);
   renderBroadcastLog();
 }
 
@@ -1164,7 +1261,7 @@ function renderPanelOverview(data, sorted, sessionData){
     o += '<td class="ov-poke" style="white-space:nowrap">';
     o += '<button class="btn-ov-poke" data-agent="' + esc(name) + '" onclick="event.stopPropagation();pokeAgent(\'' + esc(name).replace(/'/g,"\\'") + '\', this)" title="Check in ' + esc(name) + '">&#x21bb;</button>';
     if (phase !== 'running') o += ' <button class="btn-ov-poke" style="background:rgba(77,158,255,.06);border-color:rgba(77,158,255,.2);color:var(--blue)" onclick="event.stopPropagation();showLaunchModal(\'' + esc(name).replace(/'/g,"\\'") + '\')" title="Launch ' + esc(name) + '">&#x25BA;</button>';
-    if (phase === 'running') o += ' <button class="btn-ov-poke" style="color:var(--red);border-color:rgba(248,81,73,.3)" onclick="deleteAgent(event,\'' + esc(name).replace(/'/g,"\\'") + '\')" title="Delete ' + esc(name) + '">&#x25A0;</button>';
+    if (phase === 'running') o += ' <button class="btn-ov-poke" style="color:var(--orange);border-color:rgba(255,159,64,.3)" onclick="stopAgent(event,\'' + esc(name).replace(/'/g,"\\'") + '\')" title="Stop ' + esc(name) + '">&#x25A0;</button>';
     o += '</td>';
     o += '<td class="ov-name">' + esc(name) + '</td>';
     var ovStatus = a.status || 'idle';
