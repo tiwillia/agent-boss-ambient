@@ -188,13 +188,34 @@ func TestACPDeleteSession(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		if r.Method == "DELETE" && r.URL.Path == "/v1/sessions/sess-404" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method == "DELETE" && r.URL.Path == "/v1/sessions/sess-error" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("internal error"))
+			return
+		}
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 
 	cfg := testACPConfig(srv.URL)
+
+	// Test successful delete
 	if err := acpDeleteSession(cfg, "sess-1"); err != nil {
 		t.Fatalf("acpDeleteSession: %v", err)
+	}
+
+	// Test 404 (should not error)
+	if err := acpDeleteSession(cfg, "sess-404"); err != nil {
+		t.Fatalf("acpDeleteSession (404): %v", err)
+	}
+
+	// Test error case
+	if err := acpDeleteSession(cfg, "sess-error"); err == nil {
+		t.Error("acpDeleteSession should error on 500")
 	}
 }
 
@@ -206,6 +227,11 @@ func TestACPGetMetrics(t *testing.T) {
 				"total_tokens": 5000, "input_tokens": 2500, "output_tokens": 2500,
 				"duration_seconds": 120.5, "tool_calls": 15,
 			})
+			return
+		}
+		if r.Method == "GET" && r.URL.Path == "/v1/sessions/sess-err/metrics" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("error"))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -222,6 +248,146 @@ func TestACPGetMetrics(t *testing.T) {
 	}
 	if m.ToolCalls != 15 {
 		t.Errorf("tool_calls = %d, want 15", m.ToolCalls)
+	}
+
+	// Test error case
+	_, err = acpGetMetrics(cfg, "sess-err")
+	if err == nil {
+		t.Error("acpGetMetrics should error on 500")
+	}
+}
+
+func TestACPGetSession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/v1/sessions/sess-exists" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     "sess-exists",
+				"status": "running",
+				"labels": map[string]string{"boss-agent": "TestAgent"},
+			})
+			return
+		}
+		if r.URL.Path == "/v1/sessions/sess-notfound" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	cfg := testACPConfig(srv.URL)
+
+	// Test existing session
+	session, err := acpGetSession(cfg, "sess-exists")
+	if err != nil {
+		t.Fatalf("acpGetSession: %v", err)
+	}
+	if session == nil {
+		t.Fatal("expected session, got nil")
+	}
+	if session.ID != "sess-exists" {
+		t.Errorf("session.ID = %q, want sess-exists", session.ID)
+	}
+	if session.Status != "running" {
+		t.Errorf("session.Status = %q, want running", session.Status)
+	}
+
+	// Test not found (should return nil without error)
+	session, err = acpGetSession(cfg, "sess-notfound")
+	if err != nil {
+		t.Fatalf("acpGetSession (404): %v", err)
+	}
+	if session != nil {
+		t.Error("expected nil for 404, got session")
+	}
+}
+
+func TestACPGetOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/v1/sessions/sess-1/output" {
+			runID := r.URL.Query().Get("run_id")
+			if runID == "run-123" {
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"events":[{"type":"output","content":"filtered"}]}`))
+				return
+			}
+			// No runID filter
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"events":[{"type":"output","content":"all output"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	cfg := testACPConfig(srv.URL)
+
+	// Test without runID filter
+	output, err := acpGetOutput(cfg, "sess-1", "")
+	if err != nil {
+		t.Fatalf("acpGetOutput: %v", err)
+	}
+	if !strings.Contains(string(output), "all output") {
+		t.Errorf("output = %s, want to contain 'all output'", string(output))
+	}
+
+	// Test with runID filter
+	output, err = acpGetOutput(cfg, "sess-1", "run-123")
+	if err != nil {
+		t.Fatalf("acpGetOutput (with runID): %v", err)
+	}
+	if !strings.Contains(string(output), "filtered") {
+		t.Errorf("output = %s, want to contain 'filtered'", string(output))
+	}
+}
+
+func TestACPGetTranscript(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/v1/sessions/sess-1/transcript" {
+			format := r.URL.Query().Get("format")
+			if format == "" {
+				format = "json"
+			}
+			w.WriteHeader(http.StatusOK)
+			if format == "json" {
+				w.Write([]byte(`{"messages":[{"role":"user","content":"hello"}]}`))
+			} else if format == "text" {
+				w.Write([]byte(`User: hello\nAssistant: hi`))
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	cfg := testACPConfig(srv.URL)
+
+	// Test default format (json)
+	transcript, err := acpGetTranscript(cfg, "sess-1", "")
+	if err != nil {
+		t.Fatalf("acpGetTranscript: %v", err)
+	}
+	if !strings.Contains(string(transcript), "messages") {
+		t.Errorf("transcript = %s, want to contain 'messages'", string(transcript))
+	}
+
+	// Test explicit json format
+	transcript, err = acpGetTranscript(cfg, "sess-1", "json")
+	if err != nil {
+		t.Fatalf("acpGetTranscript (json): %v", err)
+	}
+	if !strings.Contains(string(transcript), "messages") {
+		t.Errorf("transcript = %s, want to contain 'messages'", string(transcript))
+	}
+
+	// Test text format
+	transcript, err = acpGetTranscript(cfg, "sess-1", "text")
+	if err != nil {
+		t.Fatalf("acpGetTranscript (text): %v", err)
+	}
+	if !strings.Contains(string(transcript), "User: hello") {
+		t.Errorf("transcript = %s, want to contain 'User: hello'", string(transcript))
 	}
 }
 
