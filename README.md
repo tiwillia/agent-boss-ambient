@@ -81,10 +81,22 @@ Things that degrade context warmth:
 
 ## Quick Start
 
+**Using Make (recommended):**
+```bash
+make build      # Build the boss binary
+make run        # Build and run the server
+```
+
+**Manual build:**
 ```bash
 go build -o boss ./cmd/boss/
 DATA_DIR=./data ./boss serve
 open http://localhost:8899
+```
+
+**View all available targets:**
+```bash
+make help
 ```
 
 ## API Reference

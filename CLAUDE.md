@@ -2,6 +2,16 @@
 
 ## Build
 
+**Using Make (recommended):**
+
+```bash
+make build          # Build boss binary to /tmp/boss
+make test           # Run tests with race detection
+make test-coverage  # Show test coverage
+```
+
+**Manual build with specific Go version:**
+
 Requires Go 1.24.4. The system Go may differ — always use the explicit GOROOT:
 
 ```bash
@@ -10,7 +20,7 @@ PATH=/home/mturansk/go/go1.24.4.linux-amd64/go/bin:$PATH \
 go build -o /tmp/boss ./cmd/boss/
 ```
 
-## Test
+**Manual test with specific Go version:**
 
 ```bash
 GOROOT=/home/mturansk/go/go1.24.4.linux-amd64/go \
@@ -18,7 +28,22 @@ PATH=/home/mturansk/go/go1.24.4.linux-amd64/go/bin:$PATH \
 go test -race -v ./internal/coordinator/
 ```
 
+**See all available targets:**
+
+```bash
+make help
+```
+
 ## Run
+
+**Using Make:**
+
+```bash
+make run        # Build and run with DATA_DIR=./data
+make dev        # Run with live reload (requires entr)
+```
+
+**Manual run:**
 
 ```bash
 DATA_DIR=./data /tmp/boss serve

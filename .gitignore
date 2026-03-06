@@ -1,5 +1,31 @@
 # Claude Code
 .claude/settings.local.json
 
+# Data directory
 /data
+
+# IDEs
 .idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+/boss
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Logs
+*.log
+nohup.out
+
+# Temporary files
+tmp/
+*.tmp
