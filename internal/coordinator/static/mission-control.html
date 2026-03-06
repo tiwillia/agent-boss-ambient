@@ -370,7 +370,7 @@ header h1 span{color:var(--blue);font-weight:400;margin-left:6px;font-size:14px}
 .btn-ov-poke.ov-poke-err:hover{background:rgba(248,81,73,.12);border-color:var(--red)}
 .overview-table tr.needs-approval td{background:rgba(248,81,73,.06);cursor:pointer}
 .overview-table tr.needs-approval:hover td{background:rgba(248,81,73,.12)}
-.tmux-badge.tmux-waiting{background:var(--red-bg);color:var(--red);border:1px solid rgba(248,81,73,.2);animation:pulse-glow 1.5s ease-in-out infinite}
+.session-badge.session-waiting{background:var(--red-bg);color:var(--red);border:1px solid rgba(248,81,73,.2);animation:pulse-glow 1.5s ease-in-out infinite}
 .approval-popup{
   position:fixed;z-index:200;background:var(--bg2);border:1px solid var(--red);
   border-radius:var(--radius);padding:0;width:600px;max-width:90vw;
@@ -1011,7 +1011,7 @@ function getSessionStatus(agentName, sessionData){
   return null;
 }
 
-function renderConsole(data, tmuxData, eventLog){
+function renderConsole(data, sessionData, eventLog){
   var o = '';
 
   o += '<div class="mid-row">';
@@ -1049,7 +1049,7 @@ function renderConsole(data, tmuxData, eventLog){
   o += '</div>';
 
   document.getElementById('page').innerHTML = o;
-  renderSessionTable(tmuxData);
+  renderSessionTable(sessionData);
   renderBroadcastLog();
 
   var agents = data.agents || {};
@@ -1111,7 +1111,7 @@ function ensureBoardSkeleton(){
   boardSkeletonReady = true;
 }
 
-function renderBoard(data, tmuxData, eventLog, interruptMetrics, interruptLog){
+function renderBoard(data, sessionData, eventLog, interruptMetrics, interruptLog){
   interruptMetrics = interruptMetrics || {total_interrupts:0,by_type:{},by_agent:{}};
   interruptLog = interruptLog || [];
   cachedBoardData = data;
@@ -1123,10 +1123,10 @@ function renderBoard(data, tmuxData, eventLog, interruptMetrics, interruptLog){
 
   ensureBoardSkeleton();
 
-  renderPanelOverview(data, sorted, tmuxData);
+  renderPanelOverview(data, sorted, sessionData);
   if (!inboxLocked) renderPanelInbox(data, sorted);
   renderPanelInterrupts(interruptMetrics, interruptLog);
-  renderPanelAgents(data, sorted, tmuxData);
+  renderPanelAgents(data, sorted, sessionData);
 
   var dot = '<span class="header-dot" style="background:var(--green)"></span>';
   document.getElementById('agent-count').innerHTML = dot + names.length + ' agents';
