@@ -748,6 +748,17 @@ func (s *Server) handleSpaceAgent(w http.ResponseWriter, r *http.Request, spaceN
 				update.RepoURL = existing.RepoURL
 			}
 		}
+
+		// Validate status against ACP backend session state (Issue #15)
+		// Don't allow agents to report "done" if their ACP session is still running
+		if acpAvailable(s.acpConfig) && update.ACPSessionID != "" && update.Status == StatusDone {
+			phase, err := acpGetSessionPhase(s.acpConfig, update.ACPSessionID)
+			if err == nil && phase == "running" {
+				s.logEvent(fmt.Sprintf("[%s/%s] overriding status 'done' to 'active' (ACP session still running)", spaceName, canonical))
+				update.Status = StatusActive
+			}
+		}
+
 		ks.Agents[canonical] = &update
 		ks.UpdatedAt = time.Now().UTC()
 		if err := s.saveSpace(ks); err != nil {
