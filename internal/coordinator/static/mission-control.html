@@ -1332,8 +1332,8 @@ function renderBoard(data, sessionData, eventLog, interruptMetrics, interruptLog
   renderPanelOverview(data, sorted, sessionData);
   if (!inboxLocked) renderPanelInbox(data, sorted);
   renderPanelInterrupts(interruptMetrics, interruptLog);
-  renderPanelContracts(data);
   renderPanelAgents(data, sorted, sessionData);
+  renderPanelContracts(data);
 
   var dot = '<span class="header-dot" style="background:var(--green)"></span>';
   document.getElementById('agent-count').innerHTML = dot + names.length + ' agents';
