@@ -2,8 +2,6 @@
 
 A lightweight shared memory bus for multi-agent AI coordination. Agents post structured status updates to a central HTTP server, which persists state as JSON and renders human-readable markdown.
 
-![Mission Control Dashboard](img.png)
-
 ## The Problem: Cold Context
 
 Multi-agent AI development has a fundamental problem: agents forget. Every time a session compacts, resumes, or starts fresh, the model reconstructs its understanding from scratch. This leads to predictable failures:
@@ -81,10 +79,22 @@ Things that degrade context warmth:
 
 ## Quick Start
 
+**Using Make (recommended):**
+```bash
+make build      # Build the boss binary
+make run        # Build and run the server
+```
+
+**Manual build:**
 ```bash
 go build -o boss ./cmd/boss/
 DATA_DIR=./data ./boss serve
 open http://localhost:8899
+```
+
+**View all available targets:**
+```bash
+make help
 ```
 
 ## API Reference
