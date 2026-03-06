@@ -415,8 +415,39 @@ header h1 span{color:var(--blue);font-weight:400;margin-left:6px;font-size:14px}
 @media (max-width: 768px) {
   .top-row{grid-template-columns:1fr}
   .mid-row{grid-template-columns:1fr}
-  header{padding:0 16px}
-  .page{padding:16px 16px 32px}
+  header{padding:0 12px}
+  .page{padding:12px 12px 24px}
+
+  /* Card headers - wrap title and buttons */
+  .card-header{flex-wrap:wrap;gap:8px;padding:10px 12px}
+  .card-title{flex:1 1 100%;margin-bottom:4px}
+
+  /* Overview table - more compact */
+  .overview-table{font-size:10px}
+  .overview-table th,.overview-table td{padding:4px 6px}
+  .overview-table .ov-branch{font-size:9px}
+  .overview-table .ov-pr{font-size:9px}
+
+  /* Header - allow wrapping on very small screens */
+  .header-top{flex-wrap:wrap;gap:8px;padding:10px 0 0}
+  .header-meta{flex-wrap:wrap;gap:8px;font-size:11px}
+  header h1{font-size:15px}
+
+  /* Buttons - smaller on mobile */
+  .btn{font-size:10px;padding:4px 8px}
+  .btn-sm{font-size:9px;padding:3px 6px}
+
+  /* Ensure no horizontal overflow */
+  .card-body{padding:10px 12px;word-wrap:break-word;overflow-wrap:break-word}
+
+  /* Tables should not force horizontal scroll */
+  .session-table,.free-table,.overview-table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+  /* Stat chips - slightly smaller on mobile */
+  .stat-chip{font-size:9px;padding:2px 8px}
+
+  /* Stats row - wrap on mobile */
+  .stats-row{display:flex;flex-wrap:wrap;gap:6px}
 }
 </style>
 </head>
