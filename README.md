@@ -224,3 +224,9 @@ On every mutation the server writes two files to `DATA_DIR`:
 | `{space}.md` | Rendered markdown | Human-readable snapshot |
 
 The `.md` file is regenerated from the `.json` on every write. It is not read back by the server — the JSON is canonical.
+
+## Documentation
+
+- **[DEPLOYMENT.md](docs/DEPLOYMENT.md)** - Complete deployment guide covering local development, container builds, Kubernetes deployment, configuration, and troubleshooting
+- **[RUNBOOK.md](docs/RUNBOOK.md)** - Operational runbook with daily operations, incident response, maintenance tasks, and monitoring
+- **[CLAUDE.md](CLAUDE.md)** - Development guide with build instructions, test procedures, and code conventions
