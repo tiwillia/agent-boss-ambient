@@ -58,6 +58,8 @@ type AgentUpdate struct {
 	Documents    []AgentDocument `json:"documents,omitempty"`
 	ACPSessionID string      `json:"acp_session_id,omitempty"`
 	RepoURL      string      `json:"repo_url,omitempty"`
+	TaskPrompt   string      `json:"task_prompt,omitempty"`
+	RepoList     []string    `json:"repo_list,omitempty"`
 	UpdatedAt    time.Time   `json:"updated_at"`
 }
 

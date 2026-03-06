@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -2049,5 +2050,95 @@ func TestStatusDoneAllowedWhenSessionStopped(t *testing.T) {
 
 	if agent.Status != StatusDone {
 		t.Errorf("expected status 'done', got %q", agent.Status)
+	}
+}
+
+// TestEditAgent verifies that Issue #19 is implemented:
+// agents can have their task prompt and repo list edited via the UI
+func TestEditAgent(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+
+	base := serverBaseURL(srv)
+
+	// Create an agent with initial prompt and repos
+	initialRepos := []string{"https://github.com/org/repo1", "https://github.com/org/repo2"}
+	resp := postJSON(t, base+"/spaces/testspace/agent/TestAgent", AgentUpdate{
+		Status:     StatusActive,
+		Summary:    "working on task",
+		TaskPrompt: "Initial task prompt",
+		RepoList:   initialRepos,
+	})
+	resp.Body.Close()
+
+	// Verify initial values
+	client := NewClient(base, "testspace")
+	agent, err := client.FetchAgent("TestAgent")
+	if err != nil {
+		t.Fatalf("FetchAgent: %v", err)
+	}
+	if agent.TaskPrompt != "Initial task prompt" {
+		t.Errorf("expected initial prompt, got %q", agent.TaskPrompt)
+	}
+	if len(agent.RepoList) != 2 || agent.RepoList[0] != initialRepos[0] {
+		t.Errorf("expected initial repos, got %v", agent.RepoList)
+	}
+
+	// Edit the agent
+	updatedRepos := []string{"https://github.com/org/updated-repo"}
+	editPayload := map[string]interface{}{
+		"task_prompt": "Updated task prompt",
+		"repo_list":   updatedRepos,
+	}
+	editBody, _ := json.Marshal(editPayload)
+	editResp, err := http.Post(base+"/spaces/testspace/edit/TestAgent", "application/json", bytes.NewReader(editBody))
+	if err != nil {
+		t.Fatalf("edit request: %v", err)
+	}
+	defer editResp.Body.Close()
+
+	if editResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(editResp.Body)
+		t.Fatalf("expected 200 OK, got %d: %s", editResp.StatusCode, string(body))
+	}
+
+	// Verify updated values
+	agent, err = client.FetchAgent("TestAgent")
+	if err != nil {
+		t.Fatalf("FetchAgent after edit: %v", err)
+	}
+	if agent.TaskPrompt != "Updated task prompt" {
+		t.Errorf("expected updated prompt %q, got %q", "Updated task prompt", agent.TaskPrompt)
+	}
+	if len(agent.RepoList) != 1 || agent.RepoList[0] != updatedRepos[0] {
+		t.Errorf("expected updated repos %v, got %v", updatedRepos, agent.RepoList)
+	}
+
+	// Verify ACPSessionID was not modified (should still be empty in this test)
+	if agent.ACPSessionID != "" {
+		t.Errorf("ACPSessionID should not have been set, got %q", agent.ACPSessionID)
+	}
+}
+
+// TestEditAgentNotFound verifies proper error handling when editing non-existent agent
+func TestEditAgentNotFound(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+
+	base := serverBaseURL(srv)
+
+	editPayload := map[string]interface{}{
+		"task_prompt": "Some prompt",
+		"repo_list":   []string{"https://github.com/org/repo"},
+	}
+	editBody, _ := json.Marshal(editPayload)
+	editResp, err := http.Post(base+"/spaces/testspace/edit/NonExistentAgent", "application/json", bytes.NewReader(editBody))
+	if err != nil {
+		t.Fatalf("edit request: %v", err)
+	}
+	defer editResp.Body.Close()
+
+	if editResp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 Not Found, got %d", editResp.StatusCode)
 	}
 }
