@@ -1940,3 +1940,114 @@ func TestClientStopAgent(t *testing.T) {
 		t.Logf("StopAgent returned expected error (ACP unavailable): %v", err)
 	}
 }
+
+// TestStatusDoneOverride verifies that Issue #15 is fixed:
+// agents cannot report "done" status if their ACP session is still running
+func TestStatusDoneOverride(t *testing.T) {
+	// Create a mock ACP server that reports session as "running"
+	mockACP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/sessions/") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "running"})
+		}
+	}))
+	defer mockACP.Close()
+
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+
+	// Configure ACP
+	srv.acpConfig = &ACPConfig{
+		BaseURL: mockACP.URL,
+		Token:   "test-token",
+		Project: "test-project",
+	}
+
+	base := serverBaseURL(srv)
+
+	// Create an agent with an ACP session
+	postJSON(t, base+"/spaces/testspace/agent/TestAgent", AgentUpdate{
+		Status:       StatusActive,
+		Summary:      "working on task",
+		ACPSessionID: "session-123",
+	}).Body.Close()
+
+	// Agent tries to report "done" status while session is still running
+	resp := postJSON(t, base+"/spaces/testspace/agent/TestAgent", AgentUpdate{
+		Status:  StatusDone,
+		Summary: "task complete",
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d", resp.StatusCode)
+	}
+
+	// Verify that status was overridden to "active"
+	client := NewClient(base, "testspace")
+	agent, err := client.FetchAgent("TestAgent")
+	if err != nil {
+		t.Fatalf("FetchAgent: %v", err)
+	}
+
+	if agent.Status != StatusActive {
+		t.Errorf("expected status to be overridden to 'active', got %q", agent.Status)
+	}
+	if agent.Summary != "task complete" {
+		t.Errorf("expected summary 'task complete', got %q", agent.Summary)
+	}
+}
+
+// TestStatusDoneAllowedWhenSessionStopped verifies that "done" is allowed
+// when the ACP session is actually stopped
+func TestStatusDoneAllowedWhenSessionStopped(t *testing.T) {
+	// Create a mock ACP server that reports session as "stopped"
+	mockACP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/sessions/") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
+		}
+	}))
+	defer mockACP.Close()
+
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+
+	// Configure ACP
+	srv.acpConfig = &ACPConfig{
+		BaseURL: mockACP.URL,
+		Token:   "test-token",
+		Project: "test-project",
+	}
+
+	base := serverBaseURL(srv)
+
+	// Create an agent with an ACP session
+	postJSON(t, base+"/spaces/testspace/agent/TestAgent", AgentUpdate{
+		Status:       StatusActive,
+		Summary:      "working on task",
+		ACPSessionID: "session-123",
+	}).Body.Close()
+
+	// Agent reports "done" status when session is stopped
+	resp := postJSON(t, base+"/spaces/testspace/agent/TestAgent", AgentUpdate{
+		Status:  StatusDone,
+		Summary: "task complete",
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d", resp.StatusCode)
+	}
+
+	// Verify that status remains "done" (not overridden)
+	client := NewClient(base, "testspace")
+	agent, err := client.FetchAgent("TestAgent")
+	if err != nil {
+		t.Fatalf("FetchAgent: %v", err)
+	}
+
+	if agent.Status != StatusDone {
+		t.Errorf("expected status 'done', got %q", agent.Status)
+	}
+}
