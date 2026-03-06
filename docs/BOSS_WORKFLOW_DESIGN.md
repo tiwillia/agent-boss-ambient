@@ -96,7 +96,7 @@ The `systemPrompt` should define:
 **Workspace Layout:**
 - BOSS API endpoint: `$BOSS_URL` environment variable
 - Space name: Configured at workflow activation
-- Agent name: Derived from workflow instance
+- Agent name: `$BOSS_AGENT` environment variable
 - Commands available: `/boss.check-in`, `/boss.post`, `/boss.read`
 
 #### 3. Startup Prompt Design
@@ -205,10 +205,10 @@ Run /boss.check-in to begin monitoring the blackboard.
 Every check-in must include:
 - `status`: "active" | "idle" | "blocked" | "done"
 - `summary`: Concise one-line status
-- `context.branch`: Current git branch
-- `context.pr`: Related PR number or status
-- `context.items`: Bullet list of recent work
-- `context.next_steps`: Planned actions
+- `branch`: Current git branch
+- `pr`: Related PR number or status
+- `items`: Array of recent work items
+- `next_steps`: Planned actions
 
 ## Work Execution Flow
 
@@ -241,12 +241,10 @@ Every check-in must include:
 {
   "status": "idle",
   "summary": "{agent-name}: {brief-status-description}",
-  "context": {
-    "branch": "main",
-    "pr": "{pr-number or status}",
-    "items": "{bullet-list-of-recent-work}",
-    "next_steps": "{planned-next-actions}"
-  }
+  "branch": "main",
+  "pr": "{pr-number or status}",
+  "items": ["{recent-work-item-1}", "{recent-work-item-2}"],
+  "next_steps": "{planned-next-actions}"
 }
 ```
 
@@ -268,7 +266,7 @@ Every check-in must include:
 The workflow expects:
 - `BOSS_URL`: Base URL of BOSS coordinator (e.g., `http://localhost:8899` or `https://boss-coordinator.../`)
 - `BOSS_SPACE`: Space name (e.g., `agent-boss-ambient`)
-- `AGENT_NAME`: Agent identifier (e.g., `Software-engineer`)
+- `BOSS_AGENT`: Agent identifier (e.g., `Software-engineer`)
 
 These can be:
 1. Set in `.claude/settings.json` as environment variables
