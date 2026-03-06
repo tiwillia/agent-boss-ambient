@@ -2,17 +2,20 @@ STOP. This is a mechanical status sync. Do NOT plan or analyze. Execute these 3 
 
 **Parse `$ARGUMENTS`:** `$ARGUMENTS` contains two words separated by a space. The FIRST word is your agent name. The SECOND word is the space name. Example: if `$ARGUMENTS` is `Overlord sdk-backend-replacement`, then your agent name is `Overlord` and the space name is `sdk-backend-replacement`.
 
-If `$ARGUMENTS` contains only ONE word, it is the space name. Run `tmux display-message -p '#S'` to get your tmux session (format: `agentdeck_NAME_hash`), extract NAME, and use that as your agent name.
+Prefer environment variables if set:
+- `$BOSS_AGENT` — your agent name
+- `$BOSS_SPACE` — space name
+- `$BOSS_URL` — coordinator URL (default: `http://localhost:8899`)
 
 ## Step 1: Read the blackboard
 
 ```bash
-curl -s http://localhost:8899/spaces/SPACE_NAME/raw
+curl -s "$BOSS_URL/spaces/$BOSS_SPACE/raw"
 ```
 
-Replace SPACE_NAME with the space name from `$ARGUMENTS`. Scan for anything addressed to you. Do NOT analyze other agents.
+Replace `$BOSS_URL` and `$BOSS_SPACE` with values from env vars or `$ARGUMENTS`. Scan for anything addressed to you. Do NOT analyze other agents.
 
-**Important rule**: Always use `curl`, never use Fetch tool.  Fetch will *not* work on localhost. **Always** use curl. This is important! 
+**Important rule**: Always use `curl`, never use Fetch tool. Fetch will *not* work on localhost. **Always** use curl. This is important!
 
 ## Step 2: Write your status JSON and POST it
 
@@ -34,18 +37,18 @@ cat > /tmp/boss_checkin.json << 'CHECKIN'
 CHECKIN
 ```
 
-Replace AGENT_NAME with your agent name from `$ARGUMENTS`. Keep summary under 120 chars. Include `"pr"` and `"repo_url"` if you have an open merge request — the dashboard links them. Both are **sticky** (sent once, preserved automatically). Add `"blockers"` array only if you are genuinely blocked. Add `"questions"` array with `[?BOSS]` prefix only if you need the human to decide something.
+Replace AGENT_NAME with your agent name. Keep summary under 120 chars. Include `"pr"` and `"repo_url"` if you have an open merge request — the dashboard links them. Both are **sticky** (sent once, preserved automatically). Add `"blockers"` array only if you are genuinely blocked. Add `"questions"` array with `[?BOSS]` prefix only if you need the human to decide something.
 
 Then POST it:
 
 ```bash
-curl -s -X POST http://localhost:8899/spaces/SPACE_NAME/agent/AGENT_NAME \
+curl -s -X POST "$BOSS_URL/spaces/$BOSS_SPACE/agent/$BOSS_AGENT" \
   -H 'Content-Type: application/json' \
-  -H 'X-Agent-Name: AGENT_NAME' \
+  -H "X-Agent-Name: $BOSS_AGENT" \
   -d @/tmp/boss_checkin.json
 ```
 
-Replace SPACE_NAME and AGENT_NAME with the values from `$ARGUMENTS`. You MUST see `accepted for` in the response. If you do not, something is wrong — retry once.
+You MUST see `accepted for` in the response. If you do not, something is wrong — retry once.
 
 ## Step 3: STOP
 

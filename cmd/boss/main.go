@@ -35,6 +35,12 @@ func main() {
 		cmdIgnite(os.Args[2:])
 	case "broadcast":
 		cmdBroadcast(os.Args[2:])
+	case "launch":
+		cmdLaunch(os.Args[2:])
+	case "stop":
+		cmdStop(os.Args[2:])
+	case "status":
+		cmdStatus(os.Args[2:])
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -55,6 +61,9 @@ Commands:
   delete                    Delete a space or agent
   ignite                    Generate ignition prompt for an agent
   broadcast                 Trigger boss-check broadcast for a space
+  launch                    Launch an ACP session for an agent
+  stop                      Stop an agent's ACP session
+  status                    Show all agents with ACP session phases
 
 Examples:
   boss serve
@@ -66,11 +75,20 @@ Examples:
   boss delete --space my-feature --agent api
   boss ignite SDK sdk-backend-replacement
   boss broadcast --space sdk-backend-replacement
+  boss launch TestAgent myspace --repo https://github.com/org/repo --prompt "Implement feature X"
+  boss stop TestAgent myspace
+  boss status --space myspace
 
 Environment:
-  BOSS_URL          Server URL (default: http://localhost:8899)
-  COORDINATOR_PORT  Server port (serve only, default: 8899)
-  DATA_DIR          Data directory (serve only, default: ./data)
+  BOSS_URL            Server URL (default: http://localhost:8899)
+  COORDINATOR_PORT    Server port (serve only, default: 8899)
+  DATA_DIR            Data directory (serve only, default: ./data)
+  ACP_URL             ACP public-api gateway URL
+  ACP_TOKEN           ACP bearer token
+  ACP_PROJECT         ACP project name
+  ACP_MODEL           ACP model (default: claude-sonnet-4)
+  ACP_TIMEOUT         ACP session timeout seconds (default: 900)
+  BOSS_EXTERNAL_URL   URL where ACP pods can reach the boss coordinator
 `)
 }
 
@@ -78,7 +96,7 @@ func serverURL() string {
 	if u := os.Getenv("BOSS_URL"); u != "" {
 		return strings.TrimRight(u, "/")
 	}
-	return "http://localhost:7777"
+	return "http://localhost:8899"
 }
 
 func cmdServe(args []string) {
@@ -206,20 +224,19 @@ func cmdSpaces(args []string) {
 
 func cmdIgnite(args []string) {
 	fs := flag.NewFlagSet("ignite", flag.ExitOnError)
-	tmuxSession := fs.String("tmux", "", "Tmux session name to register (default: auto-detect)")
 	fs.Parse(args)
 
 	positional := fs.Args()
 	if len(positional) < 2 {
 		fmt.Fprintln(os.Stderr, "boss ignite: requires <agent-name> <workspace>")
-		fmt.Fprintln(os.Stderr, "usage: boss ignite [-tmux SESSION] SDK sdk-backend-replacement")
+		fmt.Fprintln(os.Stderr, "usage: boss ignite SDK sdk-backend-replacement")
 		os.Exit(1)
 	}
 	agentName := positional[0]
 	workspace := positional[1]
 
 	client := coordinator.NewClient(serverURL(), workspace)
-	prompt, err := client.FetchIgnition(agentName, *tmuxSession)
+	prompt, err := client.FetchIgnition(agentName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "boss ignite: %v\n", err)
 		os.Exit(1)
@@ -269,4 +286,91 @@ func cmdDelete(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("deleted space %q\n", *space)
+}
+
+func cmdLaunch(args []string) {
+	fs := flag.NewFlagSet("launch", flag.ExitOnError)
+	repo := fs.String("repo", "", "Repository URL to clone (optional)")
+	prompt := fs.String("prompt", "", "Task prompt for the agent (required)")
+	fs.Parse(args)
+
+	positional := fs.Args()
+	if len(positional) < 2 {
+		fmt.Fprintln(os.Stderr, "boss launch: requires <agent-name> <space>")
+		fmt.Fprintln(os.Stderr, "usage: boss launch TestAgent myspace --repo https://github.com/org/repo --prompt 'Implement feature X'")
+		os.Exit(1)
+	}
+	agentName := positional[0]
+	space := positional[1]
+
+	if strings.TrimSpace(*prompt) == "" {
+		fmt.Fprintln(os.Stderr, "boss launch: --prompt is required")
+		os.Exit(1)
+	}
+
+	var repos []string
+	if *repo != "" {
+		repos = []string{*repo}
+	}
+
+	client := coordinator.NewClient(serverURL(), space)
+	sessionID, err := client.LaunchAgent(agentName, *prompt, repos)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "boss launch: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("launched agent [%s] in space %q — ACP session: %s\n", agentName, space, sessionID)
+}
+
+func cmdStop(args []string) {
+	fs := flag.NewFlagSet("stop", flag.ExitOnError)
+	fs.Parse(args)
+
+	positional := fs.Args()
+	if len(positional) < 2 {
+		fmt.Fprintln(os.Stderr, "boss stop: requires <agent-name> <space>")
+		fmt.Fprintln(os.Stderr, "usage: boss stop TestAgent myspace")
+		os.Exit(1)
+	}
+	agentName := positional[0]
+	space := positional[1]
+
+	client := coordinator.NewClient(serverURL(), space)
+	if err := client.StopAgent(agentName); err != nil {
+		fmt.Fprintf(os.Stderr, "boss stop: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("stopped agent [%s] in space %q\n", agentName, space)
+}
+
+func cmdStatus(args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	space := fs.String("space", "default", "Space name")
+	fs.Parse(args)
+
+	client := coordinator.NewClient(serverURL(), *space)
+	statuses, err := client.GetSessionStatus()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "boss status: %v\n", err)
+		os.Exit(1)
+	}
+	if len(statuses) == 0 {
+		fmt.Println("no agents in space")
+		return
+	}
+	for _, s := range statuses {
+		phase := s.Phase
+		if phase == "" {
+			if s.Registered {
+				phase = "(unknown)"
+			} else {
+				phase = "(no ACP session)"
+			}
+		}
+		sessionInfo := s.ACPSessionID
+		if sessionInfo == "" {
+			sessionInfo = "-"
+		}
+		fmt.Printf("  %-20s %-12s %s\n", s.Agent, phase, sessionInfo)
+	}
 }

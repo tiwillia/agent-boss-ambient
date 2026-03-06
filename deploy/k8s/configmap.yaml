@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: boss-config
+  namespace: ambient-code
+data:
+  # ACP public-api gateway URL
+  ACP_URL: "https://public-api-ambient.apps.okd1.timslab"
+  # ACP project name
+  ACP_PROJECT: "default"
+  # Default model for ACP sessions
+  ACP_MODEL: "claude-sonnet-4"
+  # Session timeout in seconds (15 minutes)
+  ACP_TIMEOUT: "900"
+  # External URL where ACP pods can reach the boss coordinator
+  # Set this to the Route/Ingress URL for the boss service
+  BOSS_EXTERNAL_URL: "http://boss-coordinator.ambient-code.svc:8899"
+  # Boss coordinator listen port
+  COORDINATOR_PORT: "8899"

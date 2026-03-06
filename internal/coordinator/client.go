@@ -140,11 +140,8 @@ func (c *Client) DeleteSpace() error {
 	return nil
 }
 
-func (c *Client) FetchIgnition(agentName string, tmuxSession string) (string, error) {
+func (c *Client) FetchIgnition(agentName string) (string, error) {
 	url := c.spacePrefix() + "/ignition/" + agentName
-	if tmuxSession != "" {
-		url += "?tmux_session=" + tmuxSession
-	}
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("fetch ignition: %w", err)
@@ -159,6 +156,82 @@ func (c *Client) FetchIgnition(agentName string, tmuxSession string) (string, er
 		return "", fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
 	return string(body), nil
+}
+
+// LaunchAgent creates an ACP session for an agent via the boss coordinator.
+func (c *Client) LaunchAgent(agentName, prompt string, repos []string) (string, error) {
+	payload := map[string]interface{}{
+		"prompt": prompt,
+		"repos":  repos,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal: %w", err)
+	}
+	resp, err := c.httpClient.Post(
+		c.spacePrefix()+"/launch/"+agentName,
+		"application/json",
+		strings.NewReader(string(data)),
+	)
+	if err != nil {
+		return "", fmt.Errorf("launch agent: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+	var result struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	return result.SessionID, nil
+}
+
+// StopAgent stops an agent's ACP session via the boss coordinator.
+func (c *Client) StopAgent(agentName string) error {
+	resp, err := c.httpClient.Post(
+		c.spacePrefix()+"/stop/"+agentName,
+		"application/json",
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("stop agent: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// SessionStatus holds the ACP session status for an agent.
+type SessionStatus struct {
+	Agent        string `json:"agent"`
+	ACPSessionID string `json:"acp_session_id,omitempty"`
+	Registered   bool   `json:"registered"`
+	Phase        string `json:"phase,omitempty"`
+}
+
+// GetSessionStatus retrieves ACP session status for all agents in a space.
+func (c *Client) GetSessionStatus() ([]SessionStatus, error) {
+	resp, err := c.httpClient.Get(c.spacePrefix() + "/api/session-status")
+	if err != nil {
+		return nil, fmt.Errorf("get session status: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+	var statuses []SessionStatus
+	if err := json.Unmarshal(body, &statuses); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return statuses, nil
 }
 
 func (c *Client) TriggerBroadcast() (string, error) {

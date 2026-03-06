@@ -56,7 +56,7 @@ type AgentUpdate struct {
 	NextSteps    string      `json:"next_steps,omitempty"`
 	FreeText     string      `json:"free_text,omitempty"`
 	Documents    []AgentDocument `json:"documents,omitempty"`
-	TmuxSession  string      `json:"tmux_session,omitempty"`
+	ACPSessionID string      `json:"acp_session_id,omitempty"`
 	RepoURL      string      `json:"repo_url,omitempty"`
 	UpdatedAt    time.Time   `json:"updated_at"`
 }

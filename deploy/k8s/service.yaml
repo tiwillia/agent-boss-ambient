@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: boss-coordinator
+  namespace: ambient-code
+  labels:
+    app: boss-coordinator
+spec:
+  type: ClusterIP
+  selector:
+    app: boss-coordinator
+  ports:
+    - name: http
+      port: 8899
+      targetPort: 8899
+      protocol: TCP

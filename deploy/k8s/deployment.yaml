@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: boss-coordinator
+  namespace: ambient-code
+  labels:
+    app: boss-coordinator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: boss-coordinator
+  template:
+    metadata:
+      labels:
+        app: boss-coordinator
+    spec:
+      containers:
+        - name: boss
+          image: image-registry.openshift-image-registry.svc:5000/ambient-code/boss-coordinator:latest
+          ports:
+            - containerPort: 8899
+              name: http
+          env:
+            - name: DATA_DIR
+              value: /data
+            - name: ACP_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: boss-config
+                  key: ACP_URL
+            - name: ACP_PROJECT
+              valueFrom:
+                configMapKeyRef:
+                  name: boss-config
+                  key: ACP_PROJECT
+            - name: ACP_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: boss-config
+                  key: ACP_MODEL
+            - name: ACP_TIMEOUT
+              valueFrom:
+                configMapKeyRef:
+                  name: boss-config
+                  key: ACP_TIMEOUT
+            - name: BOSS_EXTERNAL_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: boss-config
+                  key: BOSS_EXTERNAL_URL
+            - name: COORDINATOR_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: boss-config
+                  key: COORDINATOR_PORT
+            - name: ACP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: boss-secrets
+                  key: ACP_TOKEN
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /spaces
+              port: 8899
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /spaces
+              port: 8899
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: boss-data

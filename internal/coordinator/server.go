@@ -30,34 +30,56 @@ type sseClient struct {
 }
 
 type Server struct {
-	port             string
-	dataDir          string
-	spaces           map[string]*KnowledgeSpace
-	mu               sync.RWMutex
-	httpServer       *http.Server
-	running          bool
-	runMu            sync.Mutex
-	EventLog         []string
-	eventMu          sync.Mutex
-	stopLiveness     chan struct{}
-	sseClients       map[*sseClient]struct{}
-	sseMu            sync.Mutex
-	interrupts       *InterruptLedger
-	approvalTracked  map[string]time.Time
+	port            string
+	dataDir         string
+	bossExternalURL string
+	acpConfig       *ACPConfig
+	spaces          map[string]*KnowledgeSpace
+	mu              sync.RWMutex
+	httpServer      *http.Server
+	running         bool
+	runMu           sync.Mutex
+	EventLog        []string
+	eventMu         sync.Mutex
+	stopLiveness    chan struct{}
+	sseClients      map[*sseClient]struct{}
+	sseMu           sync.Mutex
+	interrupts      *InterruptLedger
 }
 
 func NewServer(port, dataDir string) *Server {
 	if port == "" {
 		port = DefaultPort
 	}
+
+	var acpCfg *ACPConfig
+	if u := os.Getenv("ACP_URL"); u != "" {
+		model := os.Getenv("ACP_MODEL")
+		if model == "" {
+			model = acpDefaultModel
+		}
+		timeout := acpDefaultTimeout
+		if t := os.Getenv("ACP_TIMEOUT"); t != "" {
+			fmt.Sscanf(t, "%d", &timeout)
+		}
+		acpCfg = &ACPConfig{
+			BaseURL: u,
+			Token:   os.Getenv("ACP_TOKEN"),
+			Project: os.Getenv("ACP_PROJECT"),
+			Model:   model,
+			Timeout: timeout,
+		}
+	}
+
 	return &Server{
 		port:            port,
 		dataDir:         dataDir,
+		bossExternalURL: os.Getenv("BOSS_EXTERNAL_URL"),
+		acpConfig:       acpCfg,
 		spaces:          make(map[string]*KnowledgeSpace),
 		stopLiveness:    make(chan struct{}),
 		sseClients:      make(map[*sseClient]struct{}),
 		interrupts:      NewInterruptLedger(dataDir),
-		approvalTracked: make(map[string]time.Time),
 	}
 }
 
@@ -342,6 +364,10 @@ func (s *Server) handleSpaceRoute(w http.ResponseWriter, r *http.Request) {
 			s.handleDeleteSpace(w, r, spaceName)
 			return
 		}
+		if r.Method == http.MethodPut {
+			s.handleCreateSpace(w, r, spaceName)
+			return
+		}
 		s.handleSpaceView(w, r, spaceName)
 		return
 	}
@@ -384,8 +410,8 @@ func (s *Server) handleSpaceRoute(w http.ResponseWriter, r *http.Request) {
 				s.handleSpaceAgentsJSON(w, r, spaceName)
 			case "events":
 				s.handleSpaceEventsJSON(w, r)
-			case "tmux-status":
-				s.handleSpaceTmuxStatus(w, r, spaceName)
+			case "session-status":
+				s.handleSpaceSessionStatus(w, r, spaceName)
 			default:
 				http.NotFound(w, r)
 			}
@@ -398,13 +424,6 @@ func (s *Server) handleSpaceRoute(w http.ResponseWriter, r *http.Request) {
 			agentName = strings.TrimRight(parts[2], "/")
 		}
 		s.handleIgnition(w, r, spaceName, agentName)
-	case "approve":
-		if len(parts) == 3 {
-			agentName := strings.TrimRight(parts[2], "/")
-			s.handleApproveAgent(w, r, spaceName, agentName)
-		} else {
-			http.Error(w, "agent name required", http.StatusBadRequest)
-		}
 	case "broadcast":
 		if len(parts) == 3 {
 			agentName := strings.TrimRight(parts[2], "/")
@@ -416,6 +435,34 @@ func (s *Server) handleSpaceRoute(w http.ResponseWriter, r *http.Request) {
 		if len(parts) == 3 {
 			agentName := strings.TrimRight(parts[2], "/")
 			s.handleReplyAgent(w, r, spaceName, agentName)
+		} else {
+			http.Error(w, "agent name required", http.StatusBadRequest)
+		}
+	case "launch":
+		if len(parts) == 3 {
+			agentName := strings.TrimRight(parts[2], "/")
+			s.handleLaunchAgent(w, r, spaceName, agentName)
+		} else {
+			http.Error(w, "agent name required", http.StatusBadRequest)
+		}
+	case "delete":
+		if len(parts) == 3 {
+			agentName := strings.TrimRight(parts[2], "/")
+			s.handleDeleteAgent(w, r, spaceName, agentName)
+		} else {
+			http.Error(w, "agent name required", http.StatusBadRequest)
+		}
+	case "metrics":
+		if len(parts) == 3 {
+			agentName := strings.TrimRight(parts[2], "/")
+			s.handleAgentMetrics(w, r, spaceName, agentName)
+		} else {
+			http.Error(w, "agent name required", http.StatusBadRequest)
+		}
+	case "transcript":
+		if len(parts) == 3 {
+			agentName := strings.TrimRight(parts[2], "/")
+			s.handleAgentTranscript(w, r, spaceName, agentName)
 		} else {
 			http.Error(w, "agent name required", http.StatusBadRequest)
 		}
@@ -471,6 +518,13 @@ func (s *Server) handleSpaceJSON(w http.ResponseWriter, r *http.Request, spaceNa
 	defer s.mu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ks)
+}
+
+func (s *Server) handleCreateSpace(w http.ResponseWriter, _ *http.Request, spaceName string) {
+	ks := s.getOrCreateSpace(spaceName)
+	s.logEvent(fmt.Sprintf("space %q created via API", spaceName))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"name": ks.Name, "status": "created"})
 }
 
 func (s *Server) handleDeleteSpace(w http.ResponseWriter, _ *http.Request, spaceName string) {
@@ -680,8 +734,8 @@ func (s *Server) handleSpaceAgent(w http.ResponseWriter, r *http.Request, spaceN
 
 		s.mu.Lock()
 		if existing, ok := ks.Agents[canonical]; ok {
-			if update.TmuxSession == "" && existing.TmuxSession != "" {
-				update.TmuxSession = existing.TmuxSession
+			if update.ACPSessionID == "" && existing.ACPSessionID != "" {
+				update.ACPSessionID = existing.ACPSessionID
 			}
 			if update.RepoURL == "" && existing.RepoURL != "" {
 				update.RepoURL = existing.RepoURL
@@ -880,55 +934,26 @@ func (s *Server) handleAgentDocument(w http.ResponseWriter, r *http.Request, spa
 	}
 }
 
-func (s *Server) handleIgnition(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if agentName == "" {
-		http.Error(w, "missing agent name: GET /spaces/{space}/ignition/{agent}", http.StatusBadRequest)
-		return
-	}
-
-	tmuxSession := r.URL.Query().Get("tmux_session")
-
-	ks := s.getOrCreateSpace(spaceName)
-
-	if tmuxSession != "" {
-		s.mu.Lock()
-		canonical := resolveAgentName(ks, agentName)
-		if existing, ok := ks.Agents[canonical]; ok {
-			existing.TmuxSession = tmuxSession
-		} else {
-			ks.Agents[canonical] = &AgentUpdate{
-				Status:      StatusIdle,
-				Summary:     canonical + ": awaiting ignition",
-				TmuxSession: tmuxSession,
-				UpdatedAt:   time.Now().UTC(),
-			}
-		}
-		ks.UpdatedAt = time.Now().UTC()
-		s.saveSpace(ks)
-		s.mu.Unlock()
-		s.logEvent(fmt.Sprintf("[%s/%s] tmux session registered via ignition: %s", spaceName, agentName, tmuxSession))
-	}
-
+// buildIgnition generates the full ignition document for an agent.
+// Caller must ensure the space exists (e.g. via getOrCreateSpace).
+// Acquires s.mu.RLock internally.
+func (s *Server) buildIgnition(spaceName, agentName string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	bossURL := s.externalURL()
 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("# Agent Ignition: %s\n\n", agentName))
 	b.WriteString(fmt.Sprintf("You are **%s**, an agent working in workspace **%s**.\n\n", agentName, spaceName))
 
 	b.WriteString("## Coordinator\n\n")
-	b.WriteString(fmt.Sprintf("- Boss URL: `http://localhost%s`\n", s.port))
-	b.WriteString(fmt.Sprintf("- Workspace: `%s`\n", spaceName))
+	b.WriteString(fmt.Sprintf("- Boss URL: `%s` (also available as `$BOSS_URL` env var)\n", bossURL))
+	b.WriteString(fmt.Sprintf("- Workspace: `%s` (also available as `$BOSS_SPACE` env var)\n", spaceName))
+	b.WriteString(fmt.Sprintf("- Your agent name: `%s` (also available as `$BOSS_AGENT` env var)\n", agentName))
 	b.WriteString(fmt.Sprintf("- Your channel: `POST /spaces/%s/agent/%s`\n", spaceName, agentName))
 	b.WriteString(fmt.Sprintf("- Read blackboard: `GET /spaces/%s/raw`\n", spaceName))
-	b.WriteString(fmt.Sprintf("- Dashboard: `http://localhost%s/spaces/%s/`\n", s.port, spaceName))
-	if tmuxSession != "" {
-		b.WriteString(fmt.Sprintf("- Tmux session: `%s` (pre-registered)\n", tmuxSession))
-	}
+	b.WriteString(fmt.Sprintf("- Dashboard: `%s/spaces/%s/`\n", bossURL, spaceName))
 	b.WriteString("\n")
 
 	b.WriteString("## Protocol\n\n")
@@ -936,15 +961,14 @@ func (s *Server) handleIgnition(w http.ResponseWriter, r *http.Request, spaceNam
 	b.WriteString(fmt.Sprintf("2. **Post to your channel only.** POST to `/spaces/%s/agent/%s` with `-H 'X-Agent-Name: %s'`.\n", spaceName, agentName, agentName))
 	b.WriteString("3. **Tag questions** with `[?BOSS]` — they render highlighted in the dashboard.\n")
 	b.WriteString("4. **Include location fields** in every POST: `branch`, `pr`, `test_count`.\n")
-	if tmuxSession != "" {
-		b.WriteString(fmt.Sprintf("5. **Tmux session is pre-registered.** Your session `%s` is already known to the coordinator. It is sticky — you do not need to include `tmux_session` in your POSTs.\n", tmuxSession))
-	} else {
-		b.WriteString("5. **Register your tmux session.** Include `\"tmux_session\"` in your first POST. Find it with `tmux display-message -p '#S'`. It is sticky — you only need to send it once.\n")
-	}
+	b.WriteString("5. **Use environment variables.** `$BOSS_URL`, `$BOSS_SPACE`, and `$BOSS_AGENT` are injected by the platform.\n")
 	b.WriteString("\n")
 
+	// Need the space object for peer agents and previous state — look it up under the lock we already hold.
+	ks := s.spaces[spaceName]
+
 	b.WriteString("## Peer Agents\n\n")
-	if len(ks.Agents) == 0 {
+	if ks == nil || len(ks.Agents) == 0 {
 		b.WriteString("No agents have posted yet.\n\n")
 	} else {
 		b.WriteString("| Agent | Status | Summary |\n")
@@ -955,25 +979,27 @@ func (s *Server) handleIgnition(w http.ResponseWriter, r *http.Request, spaceNam
 		b.WriteString("\n")
 	}
 
-	canonical := resolveAgentName(ks, agentName)
-	existing, hasExisting := ks.Agents[canonical]
-	if hasExisting {
-		b.WriteString("## Your Last State\n\n")
-		b.WriteString(fmt.Sprintf("- Status: %s\n", existing.Status))
-		b.WriteString(fmt.Sprintf("- Summary: %s\n", existing.Summary))
-		if existing.Branch != "" {
-			b.WriteString(fmt.Sprintf("- Branch: `%s`\n", existing.Branch))
+	if ks != nil {
+		canonical := resolveAgentName(ks, agentName)
+		existing, hasExisting := ks.Agents[canonical]
+		if hasExisting {
+			b.WriteString("## Your Last State\n\n")
+			b.WriteString(fmt.Sprintf("- Status: %s\n", existing.Status))
+			b.WriteString(fmt.Sprintf("- Summary: %s\n", existing.Summary))
+			if existing.Branch != "" {
+				b.WriteString(fmt.Sprintf("- Branch: `%s`\n", existing.Branch))
+			}
+			if existing.PR != "" {
+				b.WriteString(fmt.Sprintf("- PR: %s\n", existing.PR))
+			}
+			if existing.Phase != "" {
+				b.WriteString(fmt.Sprintf("- Phase: %s\n", existing.Phase))
+			}
+			if existing.NextSteps != "" {
+				b.WriteString(fmt.Sprintf("- Next steps: %s\n", existing.NextSteps))
+			}
+			b.WriteString("\n")
 		}
-		if existing.PR != "" {
-			b.WriteString(fmt.Sprintf("- PR: %s\n", existing.PR))
-		}
-		if existing.Phase != "" {
-			b.WriteString(fmt.Sprintf("- Phase: %s\n", existing.Phase))
-		}
-		if existing.NextSteps != "" {
-			b.WriteString(fmt.Sprintf("- Next steps: %s\n", existing.NextSteps))
-		}
-		b.WriteString("\n")
 	}
 
 	b.WriteString("## JSON Post Template\n\n")
@@ -989,8 +1015,23 @@ func (s *Server) handleIgnition(w http.ResponseWriter, r *http.Request, spaceNam
 	b.WriteString("  }'\n")
 	b.WriteString("```\n")
 
+	return b.String()
+}
+
+func (s *Server) handleIgnition(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if agentName == "" {
+		http.Error(w, "missing agent name: GET /spaces/{space}/ignition/{agent}", http.StatusBadRequest)
+		return
+	}
+
+	s.getOrCreateSpace(spaceName)
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	fmt.Fprint(w, b.String())
+	fmt.Fprint(w, s.buildIgnition(spaceName, agentName))
 }
 
 func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request, spaceName string) {
@@ -999,17 +1040,8 @@ func (s *Server) handleBroadcast(w http.ResponseWriter, r *http.Request, spaceNa
 		return
 	}
 
-	checkModel := r.URL.Query().Get("check_model")
-	if checkModel == "" {
-		checkModel = "claude-sonnet-4-6@default"
-	}
-	workModel := r.URL.Query().Get("work_model")
-	if workModel == "" {
-		workModel = "claude-opus-4-6@default"
-	}
-
 	go func() {
-		result := s.BroadcastCheckIn(spaceName, checkModel, workModel)
+		result := s.BroadcastCheckIn(spaceName)
 		sseData, _ := json.Marshal(result)
 		s.broadcastSSE(spaceName, "broadcast_complete", string(sseData))
 	}()
@@ -1024,17 +1056,8 @@ func (s *Server) handleSingleBroadcast(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
-	checkModel := r.URL.Query().Get("check_model")
-	if checkModel == "" {
-		checkModel = "claude-sonnet-4-6@default"
-	}
-	workModel := r.URL.Query().Get("work_model")
-	if workModel == "" {
-		workModel = "claude-opus-4-6@default"
-	}
-
 	go func() {
-		result := s.SingleAgentCheckIn(spaceName, agentName, checkModel, workModel)
+		result := s.SingleAgentCheckIn(spaceName, agentName)
 		sseData, _ := json.Marshal(result)
 		s.broadcastSSE(spaceName, "broadcast_complete", string(sseData))
 	}()
@@ -1069,19 +1092,14 @@ func (s *Server) handleSpaceEventsJSON(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(events)
 }
 
-type tmuxAgentStatus struct {
-	Agent         string `json:"agent"`
-	Session       string `json:"session"`
-	Registered    bool   `json:"registered"`
-	Exists        bool   `json:"exists"`
-	Idle          bool   `json:"idle"`
-	LastLine      string `json:"last_line,omitempty"`
-	NeedsApproval bool   `json:"needs_approval"`
-	ToolName      string `json:"tool_name,omitempty"`
-	PromptText    string `json:"prompt_text,omitempty"`
+type sessionAgentStatus struct {
+	Agent        string `json:"agent"`
+	ACPSessionID string `json:"acp_session_id,omitempty"`
+	Registered   bool   `json:"registered"`
+	Phase        string `json:"phase,omitempty"`
 }
 
-func (s *Server) handleSpaceTmuxStatus(w http.ResponseWriter, r *http.Request, spaceName string) {
+func (s *Server) handleSpaceSessionStatus(w http.ResponseWriter, r *http.Request, spaceName string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1092,98 +1110,38 @@ func (s *Server) handleSpaceTmuxStatus(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 
-	s.TmuxAutoDiscover(spaceName)
+	if acpAvailable(s.acpConfig) {
+		s.ACPAutoDiscover(spaceName)
+	}
 
 	s.mu.RLock()
-	type agentSession struct {
-		name    string
-		session string
+	type agentEntry struct {
+		name      string
+		sessionID string
 	}
-	var pairs []agentSession
+	var entries []agentEntry
 	for name, agent := range ks.Agents {
-		pairs = append(pairs, agentSession{name: name, session: agent.TmuxSession})
+		entries = append(entries, agentEntry{name: name, sessionID: agent.ACPSessionID})
 	}
 	s.mu.RUnlock()
 
-	hasTmux := tmuxAvailable()
-	var results []tmuxAgentStatus
-	for i, p := range pairs {
-		st := tmuxAgentStatus{
-			Agent:      p.name,
-			Session:    p.session,
-			Registered: p.session != "",
+	var results []sessionAgentStatus
+	for _, e := range entries {
+		st := sessionAgentStatus{
+			Agent:        e.name,
+			ACPSessionID: e.sessionID,
+			Registered:   e.sessionID != "",
 		}
-		if hasTmux && st.Registered {
-			st.Exists = tmuxSessionExists(p.session)
-			if st.Exists {
-				st.Idle = tmuxIsIdle(p.session)
-				st.LastLine, _ = tmuxCapturePaneLastLine(p.session)
-				approval := tmuxCheckApproval(p.session)
-				st.NeedsApproval = approval.NeedsApproval
-				st.ToolName = approval.ToolName
-				st.PromptText = approval.PromptText
+		if acpAvailable(s.acpConfig) && st.Registered {
+			if phase, err := acpGetSessionPhase(s.acpConfig, e.sessionID); err == nil {
+				st.Phase = phase
 			}
 		}
 		results = append(results, st)
-		if hasTmux && i < len(pairs)-1 {
-			time.Sleep(300 * time.Millisecond)
-		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(results)
-}
-
-func (s *Server) handleApproveAgent(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	ks, ok := s.getSpace(spaceName)
-	if !ok {
-		http.Error(w, fmt.Sprintf("space %q not found", spaceName), http.StatusNotFound)
-		return
-	}
-	s.mu.RLock()
-	canonical := resolveAgentName(ks, agentName)
-	agent, exists := ks.Agents[canonical]
-	var tmuxSession string
-	if exists {
-		tmuxSession = agent.TmuxSession
-	}
-	s.mu.RUnlock()
-	if !exists {
-		http.Error(w, "agent not found: "+agentName, http.StatusNotFound)
-		return
-	}
-	if tmuxSession == "" {
-		http.Error(w, canonical+": no tmux session registered", http.StatusBadRequest)
-		return
-	}
-	if !tmuxSessionExists(tmuxSession) {
-		http.Error(w, canonical+": tmux session not found", http.StatusBadRequest)
-		return
-	}
-	approval := tmuxCheckApproval(tmuxSession)
-	if !approval.NeedsApproval {
-		http.Error(w, canonical+": not waiting for approval", http.StatusConflict)
-		return
-	}
-	if err := tmuxApprove(tmuxSession); err != nil {
-		http.Error(w, canonical+": approve failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.logEvent(fmt.Sprintf("[%s/%s] approval granted via dashboard (tool: %s)", spaceName, canonical, approval.ToolName))
-	key := spaceName + "/" + canonical
-	ctx := map[string]string{"tool": approval.ToolName}
-	if started, was := s.approvalTracked[key]; was {
-		delete(s.approvalTracked, key)
-		ctx["wait_seconds"] = fmt.Sprintf("%.1f", time.Since(started).Seconds())
-	}
-	s.interrupts.RecordResolved(spaceName, canonical, InterruptApproval,
-		approval.PromptText, "human", "approved", ctx)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "approved", "agent": canonical, "tool": approval.ToolName})
 }
 
 func (s *Server) handleReplyAgent(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
@@ -1199,21 +1157,21 @@ func (s *Server) handleReplyAgent(w http.ResponseWriter, r *http.Request, spaceN
 	s.mu.RLock()
 	canonical := resolveAgentName(ks, agentName)
 	agent, exists := ks.Agents[canonical]
-	var tmuxSession string
+	var acpSessionID string
 	if exists {
-		tmuxSession = agent.TmuxSession
+		acpSessionID = agent.ACPSessionID
 	}
 	s.mu.RUnlock()
 	if !exists {
 		http.Error(w, "agent not found: "+agentName, http.StatusNotFound)
 		return
 	}
-	if tmuxSession == "" {
-		http.Error(w, canonical+": no tmux session registered", http.StatusBadRequest)
+	if acpSessionID == "" {
+		http.Error(w, canonical+": no ACP session registered", http.StatusBadRequest)
 		return
 	}
-	if !tmuxSessionExists(tmuxSession) {
-		http.Error(w, canonical+": tmux session not found", http.StatusBadRequest)
+	if !acpAvailable(s.acpConfig) {
+		http.Error(w, "ACP not configured", http.StatusServiceUnavailable)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 32*1024))
@@ -1232,13 +1190,200 @@ func (s *Server) handleReplyAgent(w http.ResponseWriter, r *http.Request, spaceN
 		http.Error(w, "message is required", http.StatusBadRequest)
 		return
 	}
-	if err := tmuxSendKeys(tmuxSession, payload.Message); err != nil {
+	if err := acpSendMessage(s.acpConfig, acpSessionID, payload.Message); err != nil {
 		http.Error(w, canonical+": send failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.logEvent(fmt.Sprintf("[%s/%s] boss reply sent via dashboard", spaceName, canonical))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "sent", "agent": canonical})
+}
+
+func (s *Server) handleLaunchAgent(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !acpAvailable(s.acpConfig) {
+		http.Error(w, "ACP not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	var payload struct {
+		Prompt string   `json:"prompt"`
+		Repos  []string `json:"repos,omitempty"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(payload.Prompt) == "" {
+		http.Error(w, "prompt is required", http.StatusBadRequest)
+		return
+	}
+
+	// Register the session ID with the agent
+	ks := s.getOrCreateSpace(spaceName)
+	canonical := resolveAgentName(ks, agentName)
+
+	ignition := s.buildIgnition(spaceName, canonical)
+	fullPrompt := payload.Prompt + "\n\n---\n\n" + ignition
+
+	sessionID, err := acpCreateSession(s.acpConfig, canonical, spaceName, fullPrompt, payload.Repos)
+	if err != nil {
+		http.Error(w, "create session: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.mu.Lock()
+	if ks.Agents[canonical] == nil {
+		ks.Agents[canonical] = &AgentUpdate{
+			Status:    StatusIdle,
+			Summary:   canonical + ": ACP session launched",
+			UpdatedAt: time.Now().UTC(),
+		}
+	}
+	ks.Agents[canonical].ACPSessionID = sessionID
+	ks.UpdatedAt = time.Now().UTC()
+	s.saveSpace(ks)
+	s.mu.Unlock()
+
+	s.logEvent(fmt.Sprintf("[%s/%s] ACP session launched: %s", spaceName, canonical, sessionID))
+	sseData, _ := json.Marshal(map[string]string{"space": spaceName, "agent": canonical, "session_id": sessionID})
+	s.broadcastSSE(spaceName, "agent_launched", string(sseData))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"session_id": sessionID, "agent": canonical, "status": "launching"})
+}
+
+func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ks, ok := s.getSpace(spaceName)
+	if !ok {
+		http.Error(w, fmt.Sprintf("space %q not found", spaceName), http.StatusNotFound)
+		return
+	}
+	s.mu.RLock()
+	canonical := resolveAgentName(ks, agentName)
+	agent, exists := ks.Agents[canonical]
+	var sessionID string
+	if exists {
+		sessionID = agent.ACPSessionID
+	}
+	s.mu.RUnlock()
+	if !exists {
+		http.Error(w, "agent not found: "+agentName, http.StatusNotFound)
+		return
+	}
+	if sessionID != "" && acpAvailable(s.acpConfig) {
+		if err := acpDeleteSession(s.acpConfig, sessionID); err != nil {
+			http.Error(w, "delete session: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	s.mu.Lock()
+	delete(ks.Agents, canonical)
+	ks.UpdatedAt = time.Now().UTC()
+	if err := s.saveSpace(ks); err != nil {
+		s.mu.Unlock()
+		http.Error(w, fmt.Sprintf("save: %v", err), http.StatusInternalServerError)
+		return
+	}
+	s.mu.Unlock()
+	s.logEvent(fmt.Sprintf("[%s/%s] agent deleted: %s", spaceName, canonical, sessionID))
+	sseData, _ := json.Marshal(map[string]string{"space": spaceName, "agent": canonical})
+	s.broadcastSSE(spaceName, "agent_removed", string(sseData))
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "agent": canonical, "session_id": sessionID})
+}
+
+func (s *Server) handleAgentMetrics(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !acpAvailable(s.acpConfig) {
+		http.Error(w, "ACP not configured", http.StatusServiceUnavailable)
+		return
+	}
+	ks, ok := s.getSpace(spaceName)
+	if !ok {
+		http.Error(w, fmt.Sprintf("space %q not found", spaceName), http.StatusNotFound)
+		return
+	}
+	s.mu.RLock()
+	canonical := resolveAgentName(ks, agentName)
+	agent, exists := ks.Agents[canonical]
+	var sessionID string
+	if exists {
+		sessionID = agent.ACPSessionID
+	}
+	s.mu.RUnlock()
+	if !exists {
+		http.Error(w, "agent not found: "+agentName, http.StatusNotFound)
+		return
+	}
+	if sessionID == "" {
+		http.Error(w, canonical+": no ACP session registered", http.StatusBadRequest)
+		return
+	}
+	metrics, err := acpGetMetrics(s.acpConfig, sessionID)
+	if err != nil {
+		http.Error(w, "get metrics: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(metrics)
+}
+
+func (s *Server) handleAgentTranscript(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !acpAvailable(s.acpConfig) {
+		http.Error(w, "ACP not configured", http.StatusServiceUnavailable)
+		return
+	}
+	ks, ok := s.getSpace(spaceName)
+	if !ok {
+		http.Error(w, fmt.Sprintf("space %q not found", spaceName), http.StatusNotFound)
+		return
+	}
+	s.mu.RLock()
+	canonical := resolveAgentName(ks, agentName)
+	agent, exists := ks.Agents[canonical]
+	var sessionID string
+	if exists {
+		sessionID = agent.ACPSessionID
+	}
+	s.mu.RUnlock()
+	if !exists {
+		http.Error(w, "agent not found: "+agentName, http.StatusNotFound)
+		return
+	}
+	if sessionID == "" {
+		http.Error(w, canonical+": no ACP session registered", http.StatusBadRequest)
+		return
+	}
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "json"
+	}
+	transcript, err := acpGetTranscript(s.acpConfig, sessionID, format)
+	if err != nil {
+		http.Error(w, "get transcript: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(transcript)
 }
 
 func (s *Server) handleDismissQuestion(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
@@ -1369,7 +1514,8 @@ func (s *Server) serveSSE(w http.ResponseWriter, r *http.Request, space string) 
 }
 
 func (s *Server) livenessLoop() {
-	ticker := time.NewTicker(1 * time.Second)
+	// Poll ACP session phases every 30 seconds (not every second — ACP is remote)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -1382,87 +1528,51 @@ func (s *Server) livenessLoop() {
 }
 
 func (s *Server) checkAllSessionLiveness() {
-	if !tmuxAvailable() {
+	if !acpAvailable(s.acpConfig) {
 		return
 	}
 	s.mu.RLock()
 	type probe struct {
-		space, agent, session string
+		space, agent, sessionID string
 	}
 	var probes []probe
 	for spaceName, ks := range s.spaces {
 		for name, agent := range ks.Agents {
-			if agent.TmuxSession != "" {
-				probes = append(probes, probe{spaceName, name, agent.TmuxSession})
+			if agent.ACPSessionID != "" {
+				probes = append(probes, probe{spaceName, name, agent.ACPSessionID})
 			}
 		}
 	}
 	s.mu.RUnlock()
 
 	type statusEntry struct {
-		agent, session   string
-		exists, idle     bool
-		needsApproval    bool
-		toolName, prompt string
+		agent, sessionID string
+		phase            string
 	}
 	spaceResults := make(map[string][]statusEntry)
 	for _, p := range probes {
-		e := statusEntry{agent: p.agent, session: p.session}
-		e.exists = tmuxSessionExists(p.session)
-		if e.exists {
-			e.idle = tmuxIsIdle(p.session)
-			if !e.idle {
-				approval := tmuxCheckApproval(p.session)
-				e.needsApproval = approval.NeedsApproval
-				e.toolName = approval.ToolName
-				e.prompt = approval.PromptText
-			}
+		phase, err := acpGetSessionPhase(s.acpConfig, p.sessionID)
+		if err != nil {
+			continue
 		}
-		spaceResults[p.space] = append(spaceResults[p.space], e)
+		spaceResults[p.space] = append(spaceResults[p.space], statusEntry{
+			agent:     p.agent,
+			sessionID: p.sessionID,
+			phase:     phase,
+		})
 	}
 
 	for space, entries := range spaceResults {
 		payload := make([]map[string]interface{}, len(entries))
 		for i, e := range entries {
-			key := space + "/" + e.agent
-			if e.needsApproval {
-				if _, already := s.approvalTracked[key]; !already {
-					ctx := map[string]string{}
-					if e.toolName != "" {
-						ctx["tool"] = e.toolName
-					}
-					s.interrupts.Record(space, e.agent, InterruptApproval, e.prompt, ctx)
-					s.approvalTracked[key] = time.Now()
-					s.logEvent(fmt.Sprintf("[%s/%s] approval interrupt detected (tool: %s)", space, e.agent, e.toolName))
-				}
-			} else {
-				if started, was := s.approvalTracked[key]; was {
-					delete(s.approvalTracked, key)
-					waitSec := time.Since(started).Seconds()
-					s.interrupts.RecordResolved(space, e.agent, InterruptApproval,
-						"", "auto", "cleared",
-						map[string]string{"wait_seconds": fmt.Sprintf("%.1f", waitSec)})
-					s.logEvent(fmt.Sprintf("[%s/%s] approval interrupt cleared (waited %.1fs)", space, e.agent, waitSec))
-				}
+			payload[i] = map[string]interface{}{
+				"agent":      e.agent,
+				"session_id": e.sessionID,
+				"phase":      e.phase,
 			}
-
-			m := map[string]interface{}{
-				"agent":          e.agent,
-				"session":        e.session,
-				"exists":         e.exists,
-				"idle":           e.idle,
-				"needs_approval": e.needsApproval,
-			}
-			if e.toolName != "" {
-				m["tool_name"] = e.toolName
-			}
-			if e.prompt != "" {
-				m["prompt_text"] = e.prompt
-			}
-			payload[i] = m
 		}
 		data, _ := json.Marshal(payload)
-		s.broadcastSSE(space, "tmux_liveness", string(data))
+		s.broadcastSSE(space, "session_liveness", string(data))
 	}
 }
 

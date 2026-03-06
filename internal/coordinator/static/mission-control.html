@@ -81,17 +81,18 @@ header h1 span{color:var(--blue);font-weight:400;margin-left:6px;font-size:14px}
 .broadcast-card .card-header{background:var(--cyan-bg);border-bottom-color:rgba(57,210,192,.2)}
 .broadcast-card .card-title{color:var(--cyan)}
 
-.tmux-table{width:100%;border-collapse:collapse;font-size:11px}
-.tmux-table th{text-align:left;padding:5px 8px;border-bottom:2px solid var(--border);color:var(--text2);font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
-.tmux-table td{padding:4px 8px;border-bottom:1px solid var(--border);color:var(--text2);font-size:11px}
-.tmux-table tr:hover td{background:var(--bg3)}
+.session-table{width:100%;border-collapse:collapse;font-size:11px}
+.session-table th{text-align:left;padding:5px 8px;border-bottom:2px solid var(--border);color:var(--text2);font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.session-table td{padding:4px 8px;border-bottom:1px solid var(--border);color:var(--text2);font-size:11px}
+.session-table tr:hover td{background:var(--bg3)}
 
-.tmux-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}
-.tmux-dot-idle{background:var(--green)}
-.tmux-dot-busy{background:var(--yellow)}
-.tmux-dot-offline{background:var(--text3)}
-.tmux-dot-unreg{background:var(--border2)}
-.tmux-dot-waiting{background:var(--red);animation:pulse-glow 1.5s ease-in-out infinite}
+.session-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}
+.session-dot-running{background:var(--green)}
+.session-dot-stopped{background:var(--text3)}
+.session-dot-failed{background:var(--red)}
+.session-dot-completed{background:var(--blue)}
+.session-dot-creating{background:var(--yellow)}
+.session-dot-unreg{background:var(--border2)}
 .status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:5px}
 .status-dot-active{background:var(--green)}
 .status-dot-done{background:var(--blue)}
@@ -220,7 +221,7 @@ header h1 span{color:var(--blue);font-weight:400;margin-left:6px;font-size:14px}
   padding:12px 16px 10px;display:flex;align-items:center;justify-content:space-between;
   border-bottom:1px solid var(--border);
 }
-.agent-name{font-size:15px;font-weight:700;color:#fff;display:flex;align-items:center;gap:8px}
+.agent-name{font-size:15px;font-weight:700;color:#fff;display:flex;align-items:center;gap:8px;flex:1;min-width:0}
 .agent-badges{display:flex;align-items:center;gap:6px}
 .agent-status{
   font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;
@@ -231,12 +232,34 @@ header h1 span{color:var(--blue);font-weight:400;margin-left:6px;font-size:14px}
 .status-idle{background:rgba(92,101,120,.15);color:var(--text3);border:1px solid rgba(92,101,120,.2)}
 .status-error{background:var(--red-bg);color:var(--red);border:1px solid rgba(248,81,73,.25)}
 
-.tmux-badge{
+.session-badge{
   font-size:9px;padding:2px 6px;border-radius:8px;font-weight:600;text-transform:uppercase;letter-spacing:.3px;
 }
-.tmux-idle{background:var(--green-bg);color:var(--green);border:1px solid rgba(63,185,80,.2)}
-.tmux-busy{background:var(--yellow-bg);color:var(--yellow);border:1px solid rgba(210,153,34,.2)}
-.tmux-offline{background:rgba(92,101,120,.1);color:var(--text3);border:1px solid rgba(92,101,120,.15)}
+.session-running{background:var(--green-bg);color:var(--green);border:1px solid rgba(63,185,80,.2)}
+.session-stopped{background:rgba(92,101,120,.1);color:var(--text3);border:1px solid rgba(92,101,120,.15)}
+.session-completed{background:var(--blue-bg);color:var(--blue);border:1px solid rgba(77,158,255,.2)}
+.session-failed{background:var(--red-bg);color:var(--red);border:1px solid rgba(248,81,73,.2)}
+.session-creating{background:var(--yellow-bg);color:var(--yellow);border:1px solid rgba(210,153,34,.2)}
+
+.agent-menu-wrap{position:relative}
+.agent-menu-btn{
+  background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px;
+  padding:2px 6px;border-radius:var(--radius-sm);line-height:1;letter-spacing:1px;
+}
+.agent-menu-btn:hover{background:rgba(255,255,255,.08);color:var(--text)}
+.agent-menu{
+  display:none;position:absolute;right:0;top:100%;margin-top:4px;
+  background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius-sm);
+  min-width:120px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4);
+}
+.agent-menu.open{display:block}
+.agent-menu-item{
+  display:block;width:100%;padding:8px 14px;font-size:12px;font-weight:500;
+  background:none;border:none;color:var(--text);cursor:pointer;text-align:left;
+}
+.agent-menu-item:hover{background:rgba(255,255,255,.06)}
+.agent-menu-item.danger{color:var(--red)}
+.agent-menu-item.danger:hover{background:var(--red-bg)}
 
 .agent-summary{
   padding:10px 16px;font-size:13px;font-weight:500;color:var(--text);
@@ -396,6 +419,8 @@ header h1 span{color:var(--blue);font-weight:400;margin-left:6px;font-size:14px}
     <div class="header-meta">
       <span id="agent-count"></span>
       <span id="last-update"></span>
+      <button class="btn btn-primary btn-sm" onclick="showCreateSessionModal()" style="font-size:11px;padding:4px 12px">+ New Session</button>
+      <button id="delete-space-btn" class="btn btn-sm" onclick="showDeleteSpaceModal()" style="font-size:11px;padding:4px 12px;background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.25);color:var(--red);display:none">Delete Space</button>
     </div>
   </div>
   <nav class="space-nav" id="space-nav"></nav>
@@ -411,15 +436,15 @@ header h1 span{color:var(--blue);font-weight:400;margin-left:6px;font-size:14px}
 var SPACE = null;
 var evtSource = null;
 var broadcastLog = [];
-var tmuxCache = null;
+var sessionCache = null;
 var currentView = 'board';
-var approvalPollTimer = null;
 var inboxLocked = false;
 var cachedBoardData = null;
 var cachedInterruptMetrics = null;
 var cachedInterruptLog = null;
 var boardSkeletonReady = false;
 var dismissedTexts = {};
+var launchModal = null;
 
 (function(){
   var pathMatch = window.location.pathname.match(/^\/spaces\/([^\/]+)/);
@@ -464,9 +489,14 @@ function renderSpaceList(spaces){
   var o = '';
   if (spaces.length === 0){
     o += '<div class="empty-state"><h2>No spaces yet</h2>';
-    o += '<p>POST to /spaces/{name}/agent/{agent} to create one.</p></div>';
+    o += '<p>Create a space to get started.</p>';
+    o += '<button class="btn btn-primary btn-sm" onclick="showCreateSpaceModal()" style="font-size:12px;padding:6px 16px;margin-top:12px">+ New Space</button>';
+    o += '</div>';
   } else {
-    o += '<div class="section-label">Spaces<span class="section-count">' + spaces.length + '</span></div>';
+    o += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">';
+    o += '<div class="section-label" style="margin-bottom:0">Spaces<span class="section-count">' + spaces.length + '</span></div>';
+    o += '<button class="btn btn-primary btn-sm" onclick="showCreateSpaceModal()" style="font-size:11px;padding:4px 12px">+ New Space</button>';
+    o += '</div>';
     o += '<div class="agent-grid">';
     spaces.forEach(function(s){
       o += '<a href="/spaces/' + encodeURIComponent(s.name) + '/" style="text-decoration:none">';
@@ -483,6 +513,7 @@ function renderSpaceList(spaces){
   document.getElementById('page').innerHTML = o;
   document.getElementById('agent-count').innerHTML = '';
   document.getElementById('last-update').textContent = '';
+  var dsb = document.getElementById('delete-space-btn'); if (dsb) dsb.style.display = 'none';
 }
 
 function loadSpace(name){
@@ -491,14 +522,13 @@ function loadSpace(name){
   var base = '/spaces/' + encodeURIComponent(name);
   Promise.all([
     fetch(base + '/', {headers:{'Accept':'application/json'}, cache:'no-store'}).then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
-    fetch(base + '/api/tmux-status').then(function(r){ return r.json(); }).catch(function(){ return []; }),
+    fetch(base + '/api/session-status').then(function(r){ return r.json(); }).catch(function(){ return []; }),
     fetch(base + '/api/events').then(function(r){ return r.json(); }).catch(function(){ return []; }),
     fetch(base + '/factory/metrics').then(function(r){ return r.json(); }).catch(function(){ return {total_interrupts:0,by_type:{},by_agent:{}}; }),
     fetch(base + '/factory/interrupts').then(function(r){ return r.json(); }).catch(function(){ return []; })
   ]).then(function(results){
-    tmuxCache = results[1];
+    sessionCache = results[1];
     renderBoard(results[0], results[1], results[2], results[3], results[4]);
-    startApprovalPolling();
   }).catch(function(e){
     document.getElementById('page').innerHTML =
       '<div style="text-align:center;padding:80px 0;color:var(--red)">Failed to load ' + esc(name) + ': ' + esc(e.message) + '</div>';
@@ -516,16 +546,12 @@ function loadSpace(name){
       renderBroadcastLog();
     } catch(ex){}
   });
-  evtSource.addEventListener('tmux_liveness', function(e){
+  evtSource.addEventListener('session_liveness', function(e){
     try {
       var liveness = JSON.parse(e.data);
-      var anyApprovalChange = false;
+      sessionCache = liveness;
       liveness.forEach(function(entry){
-        var oldTmux = tmuxCache ? tmuxCache.find(function(t){ return t.agent === entry.agent; }) : null;
-        if (oldTmux && oldTmux.needs_approval !== entry.needs_approval) anyApprovalChange = true;
-        if (!oldTmux && entry.needs_approval) anyApprovalChange = true;
-
-        var badges = document.querySelectorAll('.tmux-badge');
+        var badges = document.querySelectorAll('.session-badge');
         badges.forEach(function(badge){
           var card = badge.closest('.agent-card');
           if (!card) return;
@@ -533,54 +559,14 @@ function loadSpace(name){
           if (!nameEl) return;
           var name = nameEl.textContent.trim();
           if (name !== entry.agent) return;
-          if (!entry.exists){
-            badge.className = 'tmux-badge tmux-offline';
-            badge.textContent = 'offline';
-          } else if (entry.needs_approval){
-            badge.className = 'tmux-badge tmux-waiting';
-            badge.textContent = 'waiting';
-          } else if (entry.idle){
-            badge.className = 'tmux-badge tmux-idle';
-            badge.textContent = 'idle';
-          } else {
-            badge.className = 'tmux-badge tmux-busy';
-            badge.textContent = 'busy';
-          }
+          var phase = entry.phase || 'unknown';
+          badge.className = 'session-badge session-' + phase;
+          badge.textContent = phase;
         });
-
-        var dot = document.querySelector('.status-dot[data-agent="' + entry.agent + '"]');
-        if (dot) {
-          var tr = dot.closest('tr');
-          if (tr) {
-            if (entry.needs_approval) {
-              tr.className = 'needs-approval';
-              tr.style.cursor = 'pointer';
-              tr.onclick = function(ev){ showApprovalPopup(ev, entry.agent); };
-              dot.className = 'status-dot status-dot-waiting';
-            } else if (tr.className === 'needs-approval') {
-              tr.className = '';
-              tr.style.cursor = '';
-              tr.onclick = null;
-            }
-          }
-        }
       });
-      if (anyApprovalChange && tmuxCache) {
-        liveness.forEach(function(entry){
-          var old = tmuxCache.find(function(t){ return t.agent === entry.agent; });
-          if (old) {
-            old.needs_approval = entry.needs_approval;
-            old.tool_name = entry.tool_name;
-            old.prompt_text = entry.prompt_text;
-            old.exists = entry.exists;
-            old.idle = entry.idle;
-          }
-        });
-      } else {
-        tmuxCache = liveness;
-      }
     } catch(ex){}
   });
+  evtSource.addEventListener('agent_launched', function(){ loadSpace(SPACE); });
   evtSource.addEventListener('broadcast_complete', function(e){
     try {
       var result = JSON.parse(e.data);
@@ -712,104 +698,191 @@ function pokeAgent(agentName, btnEl){
   });
 }
 
-function approveAgent(agentName, btnEl){
-  if (btnEl){ btnEl.disabled = true; btnEl.textContent = '...'; }
-  broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-info', msg:'Approving ' + agentName + '...'});
-  renderBroadcastLog();
-  fetch('/spaces/' + encodeURIComponent(SPACE) + '/approve/' + encodeURIComponent(agentName), {method:'POST'})
-    .then(function(r){
+
+function showLaunchModal(agentName){
+  closeLaunchModal();
+  var overlay = document.createElement('div');
+  overlay.id = 'launch-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:24px;width:520px;max-width:90vw">'
+    + '<div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:16px">Launch Agent: ' + esc(agentName) + '</div>'
+    + '<div style="margin-bottom:10px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Repository URLs <span style="color:var(--text3)">(optional, one per line)</span></label>'
+    + '<textarea id="launch-repo" rows="3" placeholder="https://github.com/org/repo1\nhttps://github.com/org/repo2" style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none;resize:vertical;font-family:monospace"></textarea></div>'
+    + '<div style="margin-bottom:16px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Task Prompt</label>'
+    + '<textarea id="launch-prompt" rows="4" placeholder="Describe the task for this agent..." style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none;resize:vertical;font-family:inherit;line-height:1.5"></textarea></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+    + '<button onclick="closeLaunchModal()" style="padding:7px 16px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text2);font-size:12px;cursor:pointer">Cancel</button>'
+    + '<button onclick="submitLaunch(\'' + esc(agentName).replace(/'/g,"\\'") + '\')" style="padding:7px 16px;background:var(--blue-bg);border:1px solid rgba(77,158,255,.3);border-radius:6px;color:var(--blue);font-size:12px;font-weight:600;cursor:pointer">Launch</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+  launchModal = overlay;
+  overlay.addEventListener('click', function(e){ if (e.target === overlay) closeLaunchModal(); });
+  setTimeout(function(){ var p = document.getElementById('launch-prompt'); if (p) p.focus(); }, 50);
+}
+
+function closeLaunchModal(){
+  if (launchModal){ launchModal.remove(); launchModal = null; }
+}
+
+function updateDeleteSpaceBtn(agentCount){
+  var btn = document.getElementById('delete-space-btn');
+  if (!btn) return;
+  if (SPACE) {
+    btn.style.display = '';
+    btn.disabled = agentCount > 0;
+    btn.title = agentCount > 0 ? 'Delete all agents first' : 'Delete this space';
+    btn.style.opacity = agentCount > 0 ? '0.4' : '1';
+    btn.style.cursor = agentCount > 0 ? 'not-allowed' : 'pointer';
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+function showDeleteSpaceModal(){
+  if (!SPACE) return;
+  closeLaunchModal();
+  var overlay = document.createElement('div');
+  overlay.id = 'launch-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:24px;width:400px;max-width:90vw">'
+    + '<div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:4px">Delete Space</div>'
+    + '<div style="font-size:11px;color:var(--text2);margin-bottom:16px">Are you sure you want to delete space <strong style="color:var(--red)">' + esc(SPACE) + '</strong>? This action cannot be undone.</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+    + '<button onclick="closeLaunchModal()" style="padding:7px 16px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text2);font-size:12px;cursor:pointer">Cancel</button>'
+    + '<button id="del-space-confirm" style="padding:7px 16px;background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.4);border-radius:6px;color:var(--red);font-size:12px;font-weight:600;cursor:pointer">Delete</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+  launchModal = overlay;
+  overlay.addEventListener('click', function(e){ if (e.target === overlay) closeLaunchModal(); });
+  overlay.querySelector('#del-space-confirm').onclick = function(){
+    closeLaunchModal();
+    fetch('/spaces/' + encodeURIComponent(SPACE), {method:'DELETE'}).then(function(r){
       if (!r.ok) return r.text().then(function(t){ throw new Error(t); });
-      return r.json();
-    })
-    .then(function(data){
-      broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-ok', msg:agentName + ' approved (' + (data.tool || '') + ')'});
-      renderBroadcastLog();
-      if (btnEl){ btnEl.disabled = false; btnEl.textContent = 'Approve'; }
-      setTimeout(function(){ refreshTmux(); }, 1000);
-    })
-    .catch(function(e){
-      broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-err', msg:agentName + ' approve failed: ' + e.message});
-      renderBroadcastLog();
-      if (btnEl){ btnEl.disabled = false; btnEl.textContent = 'Approve'; }
+      window.location.href = '/';
+    }).catch(function(err){
+      alert('Failed to delete space: ' + err.message);
     });
+  };
 }
 
-function startApprovalPolling(){
-  if (approvalPollTimer) clearInterval(approvalPollTimer);
-  approvalPollTimer = setInterval(function(){
-    if (!SPACE) return;
-    fetch('/spaces/' + encodeURIComponent(SPACE) + '/api/tmux-status')
-      .then(function(r){ return r.json(); })
-      .then(function(data){
-        var changed = false;
-        if (tmuxCache) {
-          for (var i = 0; i < data.length; i++){
-            var old = null;
-            for (var j = 0; j < tmuxCache.length; j++){
-              if (tmuxCache[j].agent === data[i].agent){ old = tmuxCache[j]; break; }
-            }
-            if (!old || old.needs_approval !== data[i].needs_approval) changed = true;
-          }
-        } else { changed = true; }
-        tmuxCache = data;
-        if (changed) updateApprovalUI(data);
-      }).catch(function(){});
-  }, 1000);
+function showCreateSpaceModal(){
+  closeLaunchModal();
+  var overlay = document.createElement('div');
+  overlay.id = 'launch-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:24px;width:400px;max-width:90vw">'
+    + '<div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:4px">New Space</div>'
+    + '<div style="font-size:11px;color:var(--text2);margin-bottom:16px">Create a new workspace for organizing agent sessions.</div>'
+    + '<div style="margin-bottom:16px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Space Name <span style="color:var(--red)">*</span></label>'
+    + '<input id="create-space-name" type="text" placeholder="e.g. my-project" style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none;font-family:monospace"></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+    + '<button onclick="closeLaunchModal()" style="padding:7px 16px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text2);font-size:12px;cursor:pointer">Cancel</button>'
+    + '<button id="create-space-confirm" style="padding:7px 16px;background:var(--blue-bg);border:1px solid rgba(77,158,255,.3);border-radius:6px;color:var(--blue);font-size:12px;font-weight:600;cursor:pointer">Create</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+  launchModal = overlay;
+  overlay.addEventListener('click', function(e){ if (e.target === overlay) closeLaunchModal(); });
+  setTimeout(function(){ var el = document.getElementById('create-space-name'); if (el) el.focus(); }, 50);
+  var nameInput = overlay.querySelector('#create-space-name');
+  function doCreate(){
+    var name = (nameInput.value || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+    if (!name){ alert('Space name is required'); return; }
+    closeLaunchModal();
+    fetch('/spaces/' + encodeURIComponent(name), {method:'PUT'}).then(function(r){
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t); });
+      window.location.href = '/spaces/' + encodeURIComponent(name) + '/';
+    }).catch(function(err){
+      alert('Failed to create space: ' + err.message);
+    });
+  }
+  overlay.querySelector('#create-space-confirm').onclick = doCreate;
+  nameInput.addEventListener('keydown', function(e){ if (e.key === 'Enter') doCreate(); });
 }
 
-function showApprovalPopup(event, agentName){
-  dismissApprovalPopup();
-  var tmux = null;
-  if (tmuxCache) for (var i = 0; i < tmuxCache.length; i++){ if (tmuxCache[i].agent === agentName){ tmux = tmuxCache[i]; break; } }
-  if (!tmux || !tmux.needs_approval) return;
-  var popup = document.createElement('div');
-  popup.className = 'approval-popup';
-  popup.id = 'approval-popup';
-  var promptLines = (tmux.prompt_text || 'Approve tool use').replace(/ \| /g, '\n');
-  popup.innerHTML = '<div class="approval-popup-header"><span class="ap-agent">' + esc(agentName) + '</span><span class="ap-tool">' + esc(tmux.tool_name || 'tool') + '</span></div>'
-    + '<div class="approval-popup-body">' + esc(promptLines) + '</div>'
-    + '<div class="approval-popup-footer"><button class="btn-approve-dismiss" onclick="dismissApprovalPopup()">Cancel</button><button class="btn-approve-confirm" id="ap-confirm-btn" onclick="confirmApproval(\'' + esc(agentName).replace(/'/g,"\\'") + '\')">Approve</button></div>';
-  document.body.appendChild(popup);
-  var rect = event.currentTarget.getBoundingClientRect();
-  var popupW = 600;
-  var popupH = 400;
-  var top = rect.top + window.scrollY;
-  var left = Math.round((window.innerWidth - popupW) / 2);
-  if (top + popupH > window.innerHeight + window.scrollY) top = Math.max(10, window.innerHeight + window.scrollY - popupH - 10);
-  popup.style.left = Math.max(10, left) + 'px';
-  popup.style.top = Math.max(10, top) + 'px';
-  setTimeout(function(){ document.addEventListener('click', dismissOnOutsideClick); }, 0);
+function showCreateSessionModal(){
+  closeLaunchModal();
+  if (!SPACE){ alert('Please select or create a space first.'); return; }
+  var overlay = document.createElement('div');
+  overlay.id = 'launch-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:24px;width:560px;max-width:90vw">'
+    + '<div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:4px">New Session</div>'
+    + '<div style="font-size:11px;color:var(--text2);margin-bottom:16px">Launch a new ACP agent session in space: <strong style="color:var(--cyan)">' + esc(SPACE) + '</strong></div>'
+    + '<div style="margin-bottom:10px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Agent Name <span style="color:var(--red)">*</span></label>'
+    + '<input id="create-agent-name" type="text" placeholder="e.g. backend, frontend, reviewer" style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none;font-family:monospace"></div>'
+    + '<div style="margin-bottom:10px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Repository URLs <span style="color:var(--text3)">(optional, one per line)</span></label>'
+    + '<textarea id="create-repo" rows="3" placeholder="https://github.com/org/repo1\nhttps://github.com/org/repo2" style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none;resize:vertical;font-family:monospace"></textarea></div>'
+    + '<div style="margin-bottom:16px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Task Prompt <span style="color:var(--red)">*</span></label>'
+    + '<textarea id="create-prompt" rows="5" placeholder="Describe the task for this agent..." style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none;resize:vertical;font-family:inherit;line-height:1.5"></textarea></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+    + '<button onclick="closeLaunchModal()" style="padding:7px 16px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text2);font-size:12px;cursor:pointer">Cancel</button>'
+    + '<button onclick="submitCreateSession()" style="padding:7px 16px;background:var(--blue-bg);border:1px solid rgba(77,158,255,.3);border-radius:6px;color:var(--blue);font-size:12px;font-weight:600;cursor:pointer">Launch Session</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+  launchModal = overlay;
+  overlay.addEventListener('click', function(e){ if (e.target === overlay) closeLaunchModal(); });
+  setTimeout(function(){ var a = document.getElementById('create-agent-name'); if (a) a.focus(); }, 50);
 }
 
-function dismissApprovalPopup(){
-  var el = document.getElementById('approval-popup');
-  if (el) el.remove();
-  document.removeEventListener('click', dismissOnOutsideClick);
+function submitCreateSession(){
+  var agentName = (document.getElementById('create-agent-name') || {}).value || '';
+  var repoText = (document.getElementById('create-repo') || {}).value || '';
+  var prompt = (document.getElementById('create-prompt') || {}).value || '';
+  agentName = agentName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  if (!agentName){ alert('Agent name is required'); return; }
+  if (!prompt.trim()){ alert('Task prompt is required'); return; }
+  closeLaunchModal();
+  broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-info', msg:'Launching new session: ' + agentName + '...'});
+  renderBroadcastLog();
+  var repos = repoText.split(/[\n,]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  fetch('/spaces/' + encodeURIComponent(SPACE) + '/launch/' + encodeURIComponent(agentName), {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({prompt: prompt, repos: repos})
+  }).then(function(r){
+    if (!r.ok) return r.text().then(function(t){ throw new Error(t); });
+    return r.json();
+  }).then(function(data){
+    broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-ok', msg:'Session launched for ' + agentName + ': ' + (data.session_id || '')});
+    renderBroadcastLog();
+    setTimeout(function(){ loadSpace(SPACE); }, 1500);
+  }).catch(function(e){
+    broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-err', msg:'Launch failed for ' + agentName + ': ' + e.message});
+    renderBroadcastLog();
+  });
 }
 
-function dismissOnOutsideClick(e){
-  var popup = document.getElementById('approval-popup');
-  if (popup && !popup.contains(e.target)) dismissApprovalPopup();
+function submitLaunch(agentName){
+  var repoText = (document.getElementById('launch-repo') || {}).value || '';
+  var prompt = (document.getElementById('launch-prompt') || {}).value || '';
+  if (!prompt.trim()){ alert('Prompt is required'); return; }
+  closeLaunchModal();
+  broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-info', msg:'Launching ' + agentName + '...'});
+  renderBroadcastLog();
+  var repos = repoText.split(/[\n,]+/).map(function(s){ return s.trim(); }).filter(Boolean);
+  fetch('/spaces/' + encodeURIComponent(SPACE) + '/launch/' + encodeURIComponent(agentName), {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({prompt: prompt, repos: repos})
+  }).then(function(r){
+    if (!r.ok) return r.text().then(function(t){ throw new Error(t); });
+    return r.json();
+  }).then(function(data){
+    broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-ok', msg:agentName + ' launched: ' + (data.session_id || '')});
+    renderBroadcastLog();
+    setTimeout(function(){ loadSpace(SPACE); }, 1500);
+  }).catch(function(e){
+    broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-err', msg:agentName + ' launch failed: ' + e.message});
+    renderBroadcastLog();
+  });
 }
 
-function confirmApproval(agentName){
-  var btn = document.getElementById('ap-confirm-btn');
-  if (btn){ btn.disabled = true; btn.textContent = '...'; }
-  approveAgent(agentName, null);
-  setTimeout(dismissApprovalPopup, 500);
-}
-
-function updateApprovalUI(tmuxData){
-  if (!tmuxData || !SPACE) return;
-  loadSpace(SPACE);
-}
-
-function refreshTmux(){
-  fetch('/spaces/' + encodeURIComponent(SPACE) + '/api/tmux-status')
+function refreshSessions(){
+  fetch('/spaces/' + encodeURIComponent(SPACE) + '/api/session-status')
     .then(function(r){ return r.json(); })
     .then(function(data){
-      tmuxCache = data;
-      renderTmuxTable(data);
+      sessionCache = data;
+      renderSessionTable(data);
     }).catch(function(){});
 }
 
@@ -825,27 +898,26 @@ function renderBroadcastLog(){
   el.scrollTop = el.scrollHeight;
 }
 
-function renderTmuxTable(tmuxData){
-  var el = document.getElementById('tmux-table-body');
+function renderSessionTable(sessionData){
+  var el = document.getElementById('session-table-body');
   if (!el) return;
   var h = '';
-  if (!tmuxData || tmuxData.length === 0){
-    h = '<tr><td colspan="5" style="text-align:center;color:var(--text3);font-style:italic">No agents</td></tr>';
+  if (!sessionData || sessionData.length === 0){
+    h = '<tr><td colspan="4" style="text-align:center;color:var(--text3);font-style:italic">No agents</td></tr>';
   } else {
-    tmuxData.sort(function(a,b){ return a.agent.localeCompare(b.agent); });
-    tmuxData.forEach(function(t){
-      var dotCls, stLabel;
-      if (!t.registered){ dotCls='tmux-dot-unreg'; stLabel='unregistered'; }
-      else if (!t.exists){ dotCls='tmux-dot-offline'; stLabel='offline'; }
-      else if (t.idle){ dotCls='tmux-dot-idle'; stLabel='idle'; }
-      else { dotCls='tmux-dot-busy'; stLabel='busy'; }
-      var pokeCls = 'btn-ov-poke' + (t.registered && t.exists ? '' : ' ov-poke-err');
+    sessionData.sort(function(a,b){ return a.agent.localeCompare(b.agent); });
+    sessionData.forEach(function(t){
+      var phase = t.phase || (t.registered ? 'unknown' : 'unregistered');
+      var dotCls = 'session-dot-' + (t.phase || 'unreg');
+      var isRunning = phase === 'running';
       h += '<tr>';
-      h += '<td class="ov-poke"><button class="' + pokeCls + '" data-agent="' + esc(t.agent) + '" onclick="pokeAgent(\'' + esc(t.agent).replace(/'/g,"\\'") + '\', this)" title="Check in ' + esc(t.agent) + '">&#x21bb;</button></td>';
+      h += '<td class="ov-poke" style="white-space:nowrap">';
+      h += '<button class="btn-ov-poke" data-agent="' + esc(t.agent) + '" onclick="event.stopPropagation();pokeAgent(\'' + esc(t.agent).replace(/'/g,"\\'") + '\', this)" title="Check in ' + esc(t.agent) + '">&#x21bb;</button>';
+      if (isRunning) h += ' <button class="btn-ov-poke" style="color:var(--red);border-color:rgba(248,81,73,.3)" onclick="deleteAgent(event,\'' + esc(t.agent).replace(/'/g,"\\'") + '\')" title="Delete ' + esc(t.agent) + '">&#x25A0;</button>';
+      h += '</td>';
       h += '<td style="color:#fff;font-weight:600">' + esc(t.agent) + '</td>';
-      h += '<td><span class="tmux-dot ' + dotCls + '"></span>' + stLabel + '</td>';
-      h += '<td style="font-family:monospace;font-size:10px;color:var(--cyan)">' + esc(t.session || '\u2014') + '</td>';
-      h += '<td style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(t.last_line || '') + '">' + esc(t.last_line || '\u2014') + '</td>';
+      h += '<td><span class="session-dot ' + dotCls + '"></span>' + esc(phase) + '</td>';
+      h += '<td style="font-family:monospace;font-size:10px;color:var(--cyan);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.acp_session_id || '\u2014') + '</td>';
       h += '</tr>';
     });
   }
@@ -865,6 +937,48 @@ function esc(s){
   var d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+function toggleAgentMenu(e, btn){
+  e.stopPropagation();
+  var menu = btn.nextElementSibling;
+  var wasOpen = menu.classList.contains('open');
+  document.querySelectorAll('.agent-menu.open').forEach(function(m){ m.classList.remove('open'); });
+  if (!wasOpen) menu.classList.add('open');
+}
+document.addEventListener('click', function(){ document.querySelectorAll('.agent-menu.open').forEach(function(m){ m.classList.remove('open'); }); });
+
+function deleteAgent(e, agentName){
+  e.stopPropagation();
+  document.querySelectorAll('.agent-menu.open').forEach(function(m){ m.classList.remove('open'); });
+  closeLaunchModal();
+  var overlay = document.createElement('div');
+  overlay.id = 'launch-modal-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:24px;width:400px;max-width:90vw">'
+    + '<div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:4px">Delete Agent</div>'
+    + '<div style="font-size:11px;color:var(--text2);margin-bottom:16px">Are you sure you want to delete <strong style="color:var(--red)">' + esc(agentName) + '</strong>? This will stop its ACP session and remove the agent from the board.</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+    + '<button onclick="closeLaunchModal()" style="padding:7px 16px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text2);font-size:12px;cursor:pointer">Cancel</button>'
+    + '<button id="del-confirm" style="padding:7px 16px;background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.4);border-radius:6px;color:var(--red);font-size:12px;font-weight:600;cursor:pointer">Delete</button>'
+    + '</div></div>';
+  document.body.appendChild(overlay);
+  launchModal = overlay;
+  overlay.addEventListener('click', function(ev){ if (ev.target === overlay) closeLaunchModal(); });
+  overlay.querySelector('#del-confirm').onclick = function(){
+    closeLaunchModal();
+    broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-info', msg:'Deleting ' + agentName + '...'});
+    renderBroadcastLog();
+    fetch('/spaces/' + encodeURIComponent(SPACE) + '/delete/' + encodeURIComponent(agentName), {method:'POST'}).then(function(r){
+      if (!r.ok) return r.text().then(function(t){ throw new Error(t); });
+      broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-ok', msg:agentName + ' deleted'});
+      renderBroadcastLog();
+      setTimeout(function(){ loadSpace(SPACE); }, 500);
+    }).catch(function(err){
+      broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-err', msg:agentName + ' delete failed: ' + err.message});
+      renderBroadcastLog();
+    });
+  };
 }
 
 function buildMergeRequestUrl(repoUrl, pr){
@@ -889,10 +1003,10 @@ function extractBossQuestions(a){
   return qs;
 }
 
-function getTmuxStatus(agentName, tmuxData){
-  if (!tmuxData) return null;
-  for (var i = 0; i < tmuxData.length; i++){
-    if (tmuxData[i].agent === agentName) return tmuxData[i];
+function getSessionStatus(agentName, sessionData){
+  if (!sessionData) return null;
+  for (var i = 0; i < sessionData.length; i++){
+    if (sessionData[i].agent === agentName) return sessionData[i];
   }
   return null;
 }
@@ -905,12 +1019,12 @@ function renderConsole(data, tmuxData, eventLog){
   o += '<div class="card broadcast-card">';
   o += '<div class="card-header"><span class="card-title">Broadcast Console</span>';
   o += '<div style="display:flex;gap:8px">';
-  o += '<button class="btn" onclick="refreshTmux()" title="Refresh tmux status">Refresh</button>';
+  o += '<button class="btn" onclick="refreshSessions()" title="Refresh session status">Refresh</button>';
   o += '<button class="btn btn-primary" id="broadcast-btn" onclick="triggerBroadcast()">Broadcast All</button>';
   o += '</div></div>';
   o += '<div class="card-body" style="padding:10px 14px">';
-  o += '<table class="tmux-table"><thead><tr><th style="width:20px"></th><th>Agent</th><th>Status</th><th>Session</th><th>Last Output</th></tr></thead>';
-  o += '<tbody id="tmux-table-body"></tbody></table>';
+  o += '<table class="session-table"><thead><tr><th style="width:20px"></th><th>Agent</th><th>Phase</th><th>Session ID</th></tr></thead>';
+  o += '<tbody id="session-table-body"></tbody></table>';
   o += '<div class="broadcast-log" id="broadcast-log" style="max-height:300px"></div>';
   o += '</div></div>';
 
@@ -935,7 +1049,7 @@ function renderConsole(data, tmuxData, eventLog){
   o += '</div>';
 
   document.getElementById('page').innerHTML = o;
-  renderTmuxTable(tmuxData);
+  renderSessionTable(tmuxData);
   renderBroadcastLog();
 
   var agents = data.agents || {};
@@ -943,6 +1057,7 @@ function renderConsole(data, tmuxData, eventLog){
   var dot = '<span class="header-dot" style="background:var(--green)"></span>';
   document.getElementById('agent-count').innerHTML = dot + names.length + ' agents';
   document.getElementById('last-update').textContent = 'Updated ' + new Date(data.updated_at).toLocaleString();
+  updateDeleteSpaceBtn(names.length);
 
   var logEl = document.getElementById('event-log');
   if (logEl) logEl.scrollTop = logEl.scrollHeight;
@@ -1016,51 +1131,41 @@ function renderBoard(data, tmuxData, eventLog, interruptMetrics, interruptLog){
   var dot = '<span class="header-dot" style="background:var(--green)"></span>';
   document.getElementById('agent-count').innerHTML = dot + names.length + ' agents';
   document.getElementById('last-update').textContent = 'Updated ' + new Date(data.updated_at).toLocaleString();
+  updateDeleteSpaceBtn(names.length);
   renderBroadcastLog();
 }
 
-function renderPanelOverview(data, sorted, tmuxData){
+function renderPanelOverview(data, sorted, sessionData){
   var agents = data.agents || {};
   var o = '<div class="card">';
   o += '<div class="card-header"><span class="card-title">Project Overview</span>';
   o += '<div style="display:flex;gap:8px">';
-  o += '<button class="btn" onclick="refreshTmux()" title="Refresh tmux status">Refresh</button>';
+  o += '<button class="btn" onclick="refreshSessions()" title="Refresh session status">Refresh</button>';
   o += '<button class="btn btn-primary" id="broadcast-btn" onclick="triggerBroadcast()">Broadcast All</button>';
   o += '</div></div>';
   o += '<div class="card-body" style="padding:8px 12px">';
-  o += '<table class="overview-table"><thead><tr><th class="ov-poke"></th><th>Agent</th><th>Status</th><th>Branch</th><th>Session</th><th>PR</th></tr></thead><tbody>';
+  o += '<table class="overview-table"><thead><tr><th class="ov-poke"></th><th>Agent</th><th>Status</th><th>Branch</th><th>Phase</th><th>PR</th></tr></thead><tbody>';
   sorted.forEach(function(name){
     var a = agents[name];
-    var tmux = getTmuxStatus(name, tmuxData);
-    var dotCls, stLabel;
-    if (!tmux || !tmux.registered){ dotCls='tmux-dot-unreg'; stLabel='unregistered'; }
-    else if (!tmux.exists){ dotCls='tmux-dot-offline'; stLabel='offline'; }
-    else if (tmux.idle){ dotCls='tmux-dot-idle'; stLabel='idle'; }
-    else { dotCls='tmux-dot-busy'; stLabel='busy'; }
+    var sess = getSessionStatus(name, sessionData);
     var isDone = (a.status === 'done');
     var hasBlockerOv = a.blockers && a.blockers.length > 0;
-    var needsApproval = tmux && tmux.needs_approval;
-    var trCls = '';
-    if (needsApproval) trCls = ' class="needs-approval"';
-    else if (isDone) trCls = ' class="is-done"';
-    var trExtra = needsApproval ? ' onclick="showApprovalPopup(event, \'' + esc(name).replace(/'/g,"\\'") + '\')"' : '';
-    o += '<tr' + trCls + trExtra + '>';
-    var pokeOk = tmux && tmux.registered && tmux.exists;
-    var pokeCls = 'btn-ov-poke' + (pokeOk ? '' : ' ov-poke-err');
+    var phase = sess ? (sess.phase || 'unknown') : '';
+    var trCls = isDone ? ' class="is-done"' : '';
+    o += '<tr' + trCls + '>';
     o += '<td class="ov-poke" style="white-space:nowrap">';
-    o += '<button class="' + pokeCls + '" data-agent="' + esc(name) + '" onclick="event.stopPropagation();pokeAgent(\'' + esc(name).replace(/'/g,"\\'") + '\', this)" title="Check in ' + esc(name) + '">&#x21bb;</button>';
+    o += '<button class="btn-ov-poke" data-agent="' + esc(name) + '" onclick="event.stopPropagation();pokeAgent(\'' + esc(name).replace(/'/g,"\\'") + '\', this)" title="Check in ' + esc(name) + '">&#x21bb;</button>';
+    if (phase !== 'running') o += ' <button class="btn-ov-poke" style="background:rgba(77,158,255,.06);border-color:rgba(77,158,255,.2);color:var(--blue)" onclick="event.stopPropagation();showLaunchModal(\'' + esc(name).replace(/'/g,"\\'") + '\')" title="Launch ' + esc(name) + '">&#x25BA;</button>';
+    if (phase === 'running') o += ' <button class="btn-ov-poke" style="color:var(--red);border-color:rgba(248,81,73,.3)" onclick="deleteAgent(event,\'' + esc(name).replace(/'/g,"\\'") + '\')" title="Delete ' + esc(name) + '">&#x25A0;</button>';
     o += '</td>';
     o += '<td class="ov-name">' + esc(name) + '</td>';
     var ovStatus = a.status || 'idle';
-    var dotKey = ovStatus;
-    if (needsApproval) dotKey = 'waiting';
-    else if (hasBlockerOv) dotKey = 'blocked';
-    var ovLabel = needsApproval ? 'waiting' : (hasBlockerOv ? 'blocked' : ovStatus);
-    o += '<td><span class="status-dot status-dot-' + dotKey + '" data-agent="' + esc(name) + '"></span>' + ovLabel;
-    if (needsApproval && tmux.tool_name) o += ' <span style="font-size:9px;color:var(--text3)">(' + esc(tmux.tool_name) + ')</span>';
-    o += '</td>';
+    var dotKey = hasBlockerOv ? 'blocked' : ovStatus;
+    var ovLabel = hasBlockerOv ? 'blocked' : ovStatus;
+    o += '<td><span class="status-dot status-dot-' + dotKey + '" data-agent="' + esc(name) + '"></span>' + ovLabel + '</td>';
     o += '<td class="ov-branch">' + esc(a.branch || '\u2014') + '</td>';
-    o += '<td style="font-family:monospace;font-size:10px;color:var(--cyan)">' + esc(tmux && tmux.session ? tmux.session : '\u2014') + '</td>';
+    var phaseDot = phase ? ' <span class="session-dot session-dot-' + phase + '"></span>' : '';
+    o += '<td style="font-family:monospace;font-size:10px;color:var(--cyan)">' + phaseDot + esc(phase || '\u2014') + '</td>';
     var prVal = a.pr || '\u2014';
     var prUrl = buildMergeRequestUrl(a.repo_url, a.pr);
     o += '<td class="ov-pr">' + (prUrl ? '<a href="' + esc(prUrl) + '" style="color:var(--blue);text-decoration:none" target="_blank">' + esc(prVal) + '</a>' : esc(prVal)) + '</td>';
@@ -1171,7 +1276,7 @@ function renderPanelInterrupts(interruptMetrics, interruptLog){
   document.getElementById('panel-interrupts').innerHTML = o;
 }
 
-function renderPanelAgents(data, sorted, tmuxData){
+function renderPanelAgents(data, sorted, sessionData){
   var agents = data.agents || {};
   var names = Object.keys(agents).sort();
   var o = '';
@@ -1194,25 +1299,23 @@ function renderPanelAgents(data, sorted, tmuxData){
     o += '<span class="agent-name">' + esc(name) + '</span>';
     o += '<div class="agent-badges">';
 
-    var tmux = getTmuxStatus(name, tmuxData);
-    var cardNeedsApproval = tmux && tmux.needs_approval;
-    if (tmux && tmux.registered){
-      if (tmux.exists){
-        if (cardNeedsApproval) o += '<span class="tmux-badge tmux-waiting">waiting</span>';
-        else if (tmux.idle) o += '<span class="tmux-badge tmux-idle">idle</span>';
-        else o += '<span class="tmux-badge tmux-busy">busy</span>';
-      } else {
-        o += '<span class="tmux-badge tmux-offline">offline</span>';
-      }
+    var sess = getSessionStatus(name, sessionData);
+    if (sess && sess.registered && sess.phase){
+      o += '<span class="session-badge session-' + esc(sess.phase) + '">' + esc(sess.phase) + '</span>';
     }
 
     var cardStatus = a.status || 'idle';
     var statusCls = 'status-' + cardStatus;
-    if (cardNeedsApproval) statusCls = 'status-blocked';
-    else if (hasBlocker) statusCls = 'status-blocked';
-    var cardStatusLabel = cardNeedsApproval ? 'waiting' : (hasBlocker ? 'blocked' : cardStatus);
+    if (hasBlocker) statusCls = 'status-blocked';
+    var cardStatusLabel = hasBlocker ? 'blocked' : cardStatus;
     o += '<span class="agent-status ' + statusCls + '">' + cardStatusLabel + '</span>';
+    o += '</div>';
+    o += '<div class="agent-menu-wrap">';
+    o += '<button class="agent-menu-btn" onclick="toggleAgentMenu(event,this)" title="Actions">&#x22EE;</button>';
+    o += '<div class="agent-menu">';
+    o += '<button class="agent-menu-item danger" onclick="deleteAgent(event,\'' + esc(name).replace(/'/g, "\\'") + '\')">Delete</button>';
     o += '</div></div>';
+    o += '</div>';
 
     var summary = (a.summary || '').replace(/^\[?\w+\]?\s*\d{4}-\d{2}-\d{2}\s*[—–\-]*\s*/, '').replace(/^\*\*/, '').replace(/\*\*$/, '');
     o += '<div class="agent-summary">' + esc(summary) + '</div>';
