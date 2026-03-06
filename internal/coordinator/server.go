@@ -1229,17 +1229,18 @@ func (s *Server) handleLaunchAgent(w http.ResponseWriter, r *http.Request, space
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(payload.Prompt) == "" {
-		http.Error(w, "prompt is required", http.StatusBadRequest)
-		return
-	}
 
 	// Register the session ID with the agent
 	ks := s.getOrCreateSpace(spaceName)
 	canonical := resolveAgentName(ks, agentName)
 
 	ignition := s.buildIgnition(spaceName, canonical)
-	fullPrompt := payload.Prompt + "\n\n---\n\n" + ignition
+	// If no prompt provided, use a default message to resume previous work
+	taskPrompt := strings.TrimSpace(payload.Prompt)
+	if taskPrompt == "" {
+		taskPrompt = "Resume your previous work."
+	}
+	fullPrompt := taskPrompt + "\n\n---\n\n" + ignition
 
 	sessionID, err := acpCreateSession(s.acpConfig, canonical, spaceName, fullPrompt, payload.Repos)
 	if err != nil {
