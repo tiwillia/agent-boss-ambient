@@ -1101,10 +1101,10 @@ function editAgent(e, agentName){
 
   // Find current agent data to pre-fill form
   var agent = null;
-  if (SPACE_DATA && SPACE_DATA.agents) {
-    for (var name in SPACE_DATA.agents) {
+  if (cachedBoardData && cachedBoardData.agents) {
+    for (var name in cachedBoardData.agents) {
       if (name === agentName) {
-        agent = SPACE_DATA.agents[name];
+        agent = cachedBoardData.agents[name];
         break;
       }
     }
