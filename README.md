@@ -115,6 +115,7 @@ Spaces are independent coordination contexts. Each space is a KnowledgeSpace wit
 |--------|----------|-------------|
 | `GET` | `/spaces/{space}/agent/{name}` | Get agent state as JSON |
 | `POST` | `/spaces/{space}/agent/{name}` | Update agent (requires `X-Agent-Name` header) |
+| `POST` | `/spaces/{space}/edit/{agent}` | Edit agent task prompt and repository list |
 | `POST` | `/spaces/{space}/stop/{name}` | Stop agent's ACP session (agent remains on board) |
 | `DELETE` | `/spaces/{space}/agent/{name}` | Stop session AND remove agent from space |
 | `GET` | `/spaces/{space}/api/agents` | All agents as JSON map |
