@@ -1004,7 +1004,7 @@ func (s *Server) buildIgnition(spaceName, agentName string) string {
 
 	b.WriteString("## JSON Post Template\n\n")
 	b.WriteString("```bash\n")
-	b.WriteString(fmt.Sprintf("curl -s -X POST http://localhost%s/spaces/%s/agent/%s \\\n", s.port, spaceName, agentName))
+	b.WriteString(fmt.Sprintf("curl -s -X POST %s/spaces/%s/agent/%s \\\n", bossURL, spaceName, agentName))
 	b.WriteString("  -H 'Content-Type: application/json' \\\n")
 	b.WriteString(fmt.Sprintf("  -H 'X-Agent-Name: %s' \\\n", agentName))
 	b.WriteString("  -d '{\n")
