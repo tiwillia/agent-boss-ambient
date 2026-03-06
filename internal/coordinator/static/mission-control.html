@@ -717,7 +717,7 @@ function showLaunchModal(agentName){
     + '<div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:16px">Launch Agent: ' + esc(agentName) + '</div>'
     + '<div style="margin-bottom:10px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Repository URLs <span style="color:var(--text3)">(optional, one per line)</span></label>'
     + '<textarea id="launch-repo" rows="3" placeholder="https://github.com/org/repo1\nhttps://github.com/org/repo2" style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none;resize:vertical;font-family:monospace"></textarea></div>'
-    + '<div style="margin-bottom:16px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Task Prompt</label>'
+    + '<div style="margin-bottom:16px"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Task Prompt <span style="color:var(--text3)">(optional - resumes previous work if empty)</span></label>'
     + '<textarea id="launch-prompt" rows="4" placeholder="Describe the task for this agent..." style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:12px;padding:8px 10px;outline:none;resize:vertical;font-family:inherit;line-height:1.5"></textarea></div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end">'
     + '<button onclick="closeLaunchModal()" style="padding:7px 16px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text2);font-size:12px;cursor:pointer">Cancel</button>'
@@ -883,7 +883,6 @@ function submitCreateSession(){
 function submitLaunch(agentName){
   var repoText = (document.getElementById('launch-repo') || {}).value || '';
   var prompt = (document.getElementById('launch-prompt') || {}).value || '';
-  if (!prompt.trim()){ alert('Prompt is required'); return; }
   closeLaunchModal();
   broadcastLog.push({time: new Date().toLocaleTimeString(), cls:'log-info', msg:'Launching ' + agentName + '...'});
   renderBroadcastLog();
