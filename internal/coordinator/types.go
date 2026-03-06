@@ -57,10 +57,11 @@ type AgentUpdate struct {
 	FreeText     string      `json:"free_text,omitempty"`
 	Documents    []AgentDocument `json:"documents,omitempty"`
 	ACPSessionID string      `json:"acp_session_id,omitempty"`
-	RepoURL      string      `json:"repo_url,omitempty"`
-	TaskPrompt   string      `json:"task_prompt,omitempty"`
-	RepoList     []string    `json:"repo_list,omitempty"`
-	UpdatedAt    time.Time   `json:"updated_at"`
+	RepoURL           string      `json:"repo_url,omitempty"`
+	TaskPrompt        string      `json:"task_prompt,omitempty"`
+	RepoList          []string    `json:"repo_list,omitempty"`
+	HeartbeatInterval int         `json:"heartbeat_interval,omitempty"` // Minutes; 0 = disabled
+	UpdatedAt         time.Time   `json:"updated_at"`
 }
 
 type Section struct {
