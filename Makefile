@@ -54,6 +54,58 @@ test-coverage: ## Run tests with coverage report
 	$(GO) tool cover -func=coverage.out
 	@echo "$(GREEN)✓ Coverage report generated$(NC)"
 
+.PHONY: test-e2e
+test-e2e: build ## Run end-to-end tests with Playwright (requires Node.js >=18, npm >=9)
+	@echo "$(GREEN)Running e2e tests with Playwright...$(NC)"
+	@# Check for required Node.js and npm versions
+	@command -v node >/dev/null 2>&1 || { echo "$(RED)✗ Error: node is not installed. Please install Node.js >=18.0.0$(NC)"; exit 1; }
+	@command -v npm >/dev/null 2>&1 || { echo "$(RED)✗ Error: npm is not installed. Please install npm >=9.0.0$(NC)"; exit 1; }
+	@NODE_VERSION=$$(node --version | sed 's/v//'); \
+		if [ "$$(printf '%s\n' "18.0.0" "$$NODE_VERSION" | sort -V | head -n1)" != "18.0.0" ]; then \
+			echo "$(RED)✗ Error: Node.js version $$NODE_VERSION is too old. Requires >=18.0.0$(NC)"; \
+			exit 1; \
+		fi
+	@echo "$(GREEN)✓ Node.js $$(node --version) and npm $$(npm --version) detected$(NC)"
+	@# Install Playwright dependencies if needed
+	@if [ ! -d e2e/node_modules ]; then \
+		echo "$(YELLOW)Installing Playwright dependencies...$(NC)"; \
+		cd e2e && npm install; \
+	fi
+	@# Ensure Playwright browsers are installed (Playwright skips if already present)
+	@echo "$(YELLOW)Checking Playwright browsers...$(NC)"
+	@cd e2e && npx playwright install chromium 2>&1 | grep -v "is already installed" || true
+	@# Setup cleanup trap to ensure server shutdown and data cleanup even on failure
+	@trap 'EXIT_CODE=$$?; \
+		echo "$(YELLOW)Cleaning up test environment...$(NC)"; \
+		if [ -n "$$SERVER_PID" ] && kill -0 $$SERVER_PID 2>/dev/null; then \
+			kill $$SERVER_PID 2>/dev/null || true; \
+			wait $$SERVER_PID 2>/dev/null || true; \
+		fi; \
+		rm -rf e2e-data 2>/dev/null || true; \
+		if [ $$EXIT_CODE -eq 0 ]; then \
+			echo "$(GREEN)✓ E2E tests passed and cleanup complete$(NC)"; \
+		else \
+			echo "$(RED)✗ E2E tests failed (cleanup complete)$(NC)"; \
+		fi; \
+		exit $$EXIT_CODE' EXIT; \
+	DATA_DIR=./e2e-data $(BINARY_PATH) serve >/dev/null 2>&1 & \
+	SERVER_PID=$$!; \
+	echo "$(YELLOW)Started test server (PID: $$SERVER_PID)$(NC)"; \
+	echo "$(YELLOW)Waiting for server to be ready (timeout: 30s)...$(NC)"; \
+	TIMEOUT=30; \
+	ELAPSED=0; \
+	while ! curl -sf http://localhost:8899 >/dev/null 2>&1; do \
+		if [ $$ELAPSED -ge $$TIMEOUT ]; then \
+			echo "$(RED)✗ Server failed to start within $${TIMEOUT}s$(NC)"; \
+			exit 1; \
+		fi; \
+		sleep 1; \
+		ELAPSED=$$((ELAPSED + 1)); \
+	done; \
+	echo "$(GREEN)✓ Server ready after $${ELAPSED}s$(NC)"; \
+	echo "$(GREEN)Running Playwright tests...$(NC)"; \
+	cd e2e && npx playwright test
+
 .PHONY: docker-build
 docker-build: ## Build Docker image
 	@echo "$(GREEN)Building Docker image: $(FULL_IMAGE)$(NC)"
