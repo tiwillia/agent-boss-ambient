@@ -76,7 +76,7 @@ func (cr *backendSessionCR) toSessionStatus() acpSessionStatus {
 	}
 	return acpSessionStatus{
 		ID:          cr.Metadata.Name,
-		Status:      cr.Status.Phase,
+		Status:      strings.ToLower(cr.Status.Phase),
 		DisplayName: displayName,
 		CreatedAt:   createdAt,
 		Labels:      cr.Metadata.Labels,
@@ -287,7 +287,7 @@ func acpGetSessionPhase(cfg *ACPConfig, sessionID string) (string, error) {
 	if err := json.Unmarshal(data, &cr); err != nil {
 		return "", fmt.Errorf("parse session response: %w", err)
 	}
-	return cr.Status.Phase, nil
+	return strings.ToLower(cr.Status.Phase), nil
 }
 
 // acpGetSession retrieves full session details.
