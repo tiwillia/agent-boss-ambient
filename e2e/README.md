@@ -85,7 +85,10 @@ e2e/
 ├── tests/
 │   ├── space-crud.spec.js          # Space create/view/delete workflow
 │   ├── agent-operations.spec.js    # Agent management operations
-│   └── complete-workflows.spec.js  # End-to-end workflows
+│   ├── complete-workflows.spec.js  # End-to-end workflows
+│   ├── contract-operations.spec.js # Contract CRUD and positioning
+│   ├── panels-interactions.spec.js # Panel visibility and responsive behavior
+│   └── navigation.spec.js          # Navigation and routing
 └── README.md                        # This file
 ```
 
@@ -123,6 +126,43 @@ Tests end-to-end workflows:
 4. **Edit button fix**: Verify edit button opens modal with populated fields (Issue #30 regression test)
 
 These tests validate complete user workflows and feature integrations.
+
+### contract-operations.spec.js
+
+Tests contract management operations within a space:
+1. Verify contracts panel displays beneath agents panel (Issue #34)
+2. Create a new contract with title and content
+3. Edit an existing contract and verify changes
+4. Delete a contract and confirm removal
+5. Handle multiple contracts within the same space
+
+Each test uses unique contract titles to prevent conflicts and includes proper cleanup.
+
+### panels-interactions.spec.js
+
+Tests UI panel functionality and responsive behavior:
+1. Verify inbox panel visibility and content
+2. Verify interrupt panel display
+3. Test panel layout on mobile viewport (375x667)
+4. Test panel layout on desktop viewport (1920x1080)
+5. Verify panel scroll functionality when content overflows
+6. Check for visible panel headers (Overview, Agents, Contracts, etc.)
+7. Validate panel layout maintains integrity during window resize
+
+Responsive tests verify panels stack vertically on mobile and maintain proper width constraints.
+
+### navigation.spec.js
+
+Tests navigation and routing functionality:
+1. Navigate between multiple spaces via links
+2. Direct URL navigation to space dashboard
+3. Browser back and forward navigation between home and space
+4. Graceful handling of non-existent space URLs (404)
+5. Render space list with multiple spaces visible
+6. Maintain URL consistency during page reload
+7. Navigate from space dashboard back to home
+
+Tests verify URL routing, browser history API integration, and proper error handling.
 
 ## Configuration
 
