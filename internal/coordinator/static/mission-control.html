@@ -1315,8 +1315,8 @@ function ensureBoardSkeleton(){
   o += '<div id="panel-inbox"></div>';
   o += '<div id="panel-interrupts"></div>';
   o += '</div>';
-  o += '<div id="panel-contracts"></div>';
   o += '<div id="panel-agents"></div>';
+  o += '<div id="panel-contracts"></div>';
   document.getElementById('page').innerHTML = o;
   boardSkeletonReady = true;
 }
@@ -1495,6 +1495,7 @@ function renderPanelContracts(data){
   }
 
   var o = '';
+  o += '<div class="section-label">Shared Contracts</div>';
   o += '<div class="contracts-card" style="margin-bottom:20px">';
   o += '<div class="contracts-header" onclick="this.nextElementSibling.classList.toggle(\'open\')">';
   o += '<span class="card-title">Shared Contracts</span>';

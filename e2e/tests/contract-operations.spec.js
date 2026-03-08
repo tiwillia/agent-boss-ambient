@@ -54,26 +54,41 @@ test.describe('Contract Operations', () => {
     }
   });
 
-  test('should display contracts panel beneath agents', async ({ page }) => {
-    // Verify the page structure has contracts panel
-    const contractsPanel = page.locator('[data-panel="contracts"], .contracts-panel, section:has-text("Contracts")');
+  test('should display contracts panel beneath agents', async ({ page, request }) => {
+    // Seed an agent so the agents panel renders
+    await request.post(`/spaces/${testSpaceName}/agent/test-agent`, {
+      headers: { 'Content-Type': 'application/json', 'X-Agent-Name': 'test-agent' },
+      data: { status: 'active', summary: 'Test agent for layout verification' },
+    });
 
-    // Check if contracts panel exists and is visible
-    const panelExists = await contractsPanel.isVisible({ timeout: 5000 }).catch(() => false);
+    // Navigate and wait for board to render
+    await page.goto(`/spaces/${testSpaceName}/`);
+    await page.waitForSelector('#panel-agents', { timeout: 5000 });
 
-    if (panelExists) {
-      // Verify it's positioned after the agents section
-      // This validates Issue #34: contracts should be beneath agents
-      const agentsPanel = page.locator('[data-panel="agents"], .agents-panel, section:has-text("Agents")');
-      const contractsPosition = await contractsPanel.boundingBox();
-      const agentsPosition = await agentsPanel.boundingBox().catch(() => null);
+    // Both panels should exist in the DOM
+    const agentsPanel = page.locator('#panel-agents');
+    const contractsPanel = page.locator('#panel-contracts');
+    await expect(agentsPanel).toBeVisible();
+    await expect(contractsPanel).toBeVisible();
 
-      if (agentsPosition && contractsPosition) {
-        // Contracts panel should be below agents panel (higher Y coordinate)
-        expect(contractsPosition.y).toBeGreaterThan(agentsPosition.y);
-      }
-    }
-    // Note: If contracts panel doesn't exist, that's also valid (feature may not be implemented yet)
+    // Verify contracts section has a section-label header matching agents
+    const contractsSectionLabel = contractsPanel.locator('.section-label');
+    await expect(contractsSectionLabel).toBeVisible();
+    await expect(contractsSectionLabel).toHaveText('Shared Contracts');
+
+    // Verify DOM order: #panel-agents comes before #panel-contracts
+    const agentsFirst = await page.evaluate(() => {
+      const agents = document.getElementById('panel-agents');
+      const contracts = document.getElementById('panel-contracts');
+      // compareDocumentPosition bit 4 = DOCUMENT_POSITION_FOLLOWING
+      return (agents.compareDocumentPosition(contracts) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    });
+    expect(agentsFirst).toBe(true);
+
+    // Verify visual position: contracts Y is greater than agents Y
+    const agentsBox = await agentsPanel.boundingBox();
+    const contractsBox = await contractsPanel.boundingBox();
+    expect(contractsBox.y).toBeGreaterThan(agentsBox.y);
   });
 
   test('should create a new contract', async ({ page }) => {
