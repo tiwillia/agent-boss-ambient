@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+const testSessionsPath = "/api/projects/test-project/agentic-sessions"
+
 func testACPConfig(serverURL string) *ACPConfig {
 	return &ACPConfig{
 		BaseURL: serverURL,
@@ -15,6 +17,22 @@ func testACPConfig(serverURL string) *ACPConfig {
 		Project: "test-project",
 		Model:   "claude-sonnet-4",
 		Timeout: 900,
+	}
+}
+
+// backendCR is a test helper to build a K8s CR-shaped response.
+func backendCR(name, phase string, labels map[string]string) map[string]interface{} {
+	return map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"name":   name,
+			"labels": labels,
+		},
+		"spec": map[string]interface{}{
+			"displayName": name,
+		},
+		"status": map[string]interface{}{
+			"phase": phase,
+		},
 	}
 }
 
@@ -33,29 +51,33 @@ func TestACPAvailable(t *testing.T) {
 
 func TestACPCreateSession(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/v1/sessions" {
-			// Verify auth headers
+		if r.Method == "POST" && r.URL.Path == testSessionsPath {
+			// Verify auth header
 			if r.Header.Get("Authorization") != "Bearer test-token" {
 				t.Errorf("wrong auth header: %q", r.Header.Get("Authorization"))
 			}
-			if r.Header.Get("X-Ambient-Project") != "test-project" {
-				t.Errorf("wrong project header: %q", r.Header.Get("X-Ambient-Project"))
+			// Verify no X-Ambient-Project header (backend API uses path-based project)
+			if r.Header.Get("X-Ambient-Project") != "" {
+				t.Error("X-Ambient-Project header should not be set for backend API")
 			}
 
 			var body map[string]interface{}
 			json.NewDecoder(r.Body).Decode(&body)
-			if body["task"] == nil {
-				t.Error("task field missing from request body")
+			if body["initialPrompt"] == nil {
+				t.Error("initialPrompt field missing from request body")
+			}
+			if body["task"] != nil {
+				t.Error("task field should not be in backend API request")
+			}
+			if llm, ok := body["llmSettings"].(map[string]interface{}); !ok || llm["model"] == nil {
+				t.Error("llmSettings.model missing from request body")
+			}
+			if body["labels"] == nil {
+				t.Error("labels field missing from request body")
 			}
 
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"id": "session-abc123"})
-			return
-		}
-		// Handle the label PATCH request
-		if r.Method == "PATCH" && strings.Contains(r.URL.Path, "/v1/sessions/") {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"id": "session-abc123"})
+			json.NewEncoder(w).Encode(backendCR("session-abc123", "pending", nil))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -73,14 +95,16 @@ func TestACPCreateSession(t *testing.T) {
 }
 
 func TestACPSendMessage(t *testing.T) {
-	var capturedContent string
+	var capturedMessages []interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/v1/sessions/sess-1/message" {
-			var body map[string]string
+		if r.Method == "POST" && r.URL.Path == testSessionsPath+"/sess-1/agui/run" {
+			var body map[string]interface{}
 			json.NewDecoder(r.Body).Decode(&body)
-			capturedContent = body["content"]
+			if msgs, ok := body["messages"].([]interface{}); ok {
+				capturedMessages = msgs
+			}
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"run_id": "run-1"})
+			json.NewEncoder(w).Encode(map[string]string{"runId": "run-1", "threadId": "sess-1"})
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -91,19 +115,29 @@ func TestACPSendMessage(t *testing.T) {
 	if err := acpSendMessage(cfg, "sess-1", "hello agent"); err != nil {
 		t.Fatalf("acpSendMessage: %v", err)
 	}
-	if capturedContent != "hello agent" {
-		t.Errorf("content = %q, want %q", capturedContent, "hello agent")
+	if len(capturedMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(capturedMessages))
+	}
+	msg := capturedMessages[0].(map[string]interface{})
+	if msg["role"] != "user" {
+		t.Errorf("role = %q, want user", msg["role"])
+	}
+	if msg["content"] != "hello agent" {
+		t.Errorf("content = %q, want %q", msg["content"], "hello agent")
+	}
+	if msg["id"] == nil || msg["id"] == "" {
+		t.Error("message id should be set")
 	}
 }
 
 func TestACPGetSessionPhase(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/v1/sessions/sess-running" {
+		if r.Method == "GET" && r.URL.Path == testSessionsPath+"/sess-running" {
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"id": "sess-running", "status": "running"})
+			json.NewEncoder(w).Encode(backendCR("sess-running", "running", nil))
 			return
 		}
-		if r.URL.Path == "/v1/sessions/sess-missing" {
+		if r.URL.Path == testSessionsPath+"/sess-missing" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -132,16 +166,19 @@ func TestACPGetSessionPhase(t *testing.T) {
 
 func TestACPListSessions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/v1/sessions" {
-			selector := r.URL.Query().Get("labelSelector")
-			if selector != "boss-space=myspace,managed-by=agent-boss" && selector != "managed-by=agent-boss,boss-space=myspace" {
-				// Also allow unfiltered
-			}
+		if r.Method == "GET" && r.URL.Path == testSessionsPath {
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"items": []map[string]interface{}{
-					{"id": "sess-1", "status": "running", "labels": map[string]string{"boss-agent": "API", "boss-space": "myspace"}},
-					{"id": "sess-2", "status": "stopped", "labels": map[string]string{"boss-agent": "FE", "boss-space": "myspace"}},
+				"items": []interface{}{
+					backendCR("sess-1", "running", map[string]string{
+						"boss-agent": "API", "boss-space": "myspace", "managed-by": "agent-boss",
+					}),
+					backendCR("sess-2", "stopped", map[string]string{
+						"boss-agent": "FE", "boss-space": "myspace", "managed-by": "agent-boss",
+					}),
+					backendCR("sess-3", "running", map[string]string{
+						"boss-agent": "Other", "boss-space": "otherspace", "managed-by": "agent-boss",
+					}),
 				},
 			})
 			return
@@ -151,22 +188,33 @@ func TestACPListSessions(t *testing.T) {
 	defer srv.Close()
 
 	cfg := testACPConfig(srv.URL)
+
+	// Filter by labels (client-side filtering)
 	sessions, err := acpListSessions(cfg, map[string]string{"boss-space": "myspace", "managed-by": "agent-boss"})
 	if err != nil {
 		t.Fatalf("acpListSessions: %v", err)
 	}
 	if len(sessions) != 2 {
-		t.Errorf("got %d sessions, want 2", len(sessions))
+		t.Errorf("got %d sessions, want 2 (filtered from 3)", len(sessions))
+	}
+
+	// No filter returns all
+	allSessions, err := acpListSessions(cfg, nil)
+	if err != nil {
+		t.Fatalf("acpListSessions (no filter): %v", err)
+	}
+	if len(allSessions) != 3 {
+		t.Errorf("got %d sessions, want 3 (unfiltered)", len(allSessions))
 	}
 }
 
 func TestACPStopSession(t *testing.T) {
-	var capturedBody map[string]interface{}
+	var stopCalled bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "PATCH" && r.URL.Path == "/v1/sessions/sess-1" {
-			json.NewDecoder(r.Body).Decode(&capturedBody)
+		if r.Method == "POST" && r.URL.Path == testSessionsPath+"/sess-1/stop" {
+			stopCalled = true
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"id": "sess-1", "status": "stopped"})
+			json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -177,22 +225,22 @@ func TestACPStopSession(t *testing.T) {
 	if err := acpStopSession(cfg, "sess-1"); err != nil {
 		t.Fatalf("acpStopSession: %v", err)
 	}
-	if stopped, ok := capturedBody["stopped"].(bool); !ok || !stopped {
-		t.Errorf("expected stopped=true in body, got %v", capturedBody)
+	if !stopCalled {
+		t.Error("expected POST to /stop endpoint")
 	}
 }
 
 func TestACPDeleteSession(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "DELETE" && r.URL.Path == "/v1/sessions/sess-1" {
+		if r.Method == "DELETE" && r.URL.Path == testSessionsPath+"/sess-1" {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if r.Method == "DELETE" && r.URL.Path == "/v1/sessions/sess-404" {
+		if r.Method == "DELETE" && r.URL.Path == testSessionsPath+"/sess-404" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		if r.Method == "DELETE" && r.URL.Path == "/v1/sessions/sess-error" {
+		if r.Method == "DELETE" && r.URL.Path == testSessionsPath+"/sess-error" {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte("internal error"))
 			return
@@ -220,55 +268,28 @@ func TestACPDeleteSession(t *testing.T) {
 }
 
 func TestACPGetMetrics(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/v1/sessions/sess-1/metrics" {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"total_tokens": 5000, "input_tokens": 2500, "output_tokens": 2500,
-				"duration_seconds": 120.5, "tool_calls": 15,
-			})
-			return
-		}
-		if r.Method == "GET" && r.URL.Path == "/v1/sessions/sess-err/metrics" {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("error"))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	cfg := testACPConfig(srv.URL)
+	cfg := testACPConfig("http://unused")
+	// acpGetMetrics returns empty metrics (not supported by backend API)
 	m, err := acpGetMetrics(cfg, "sess-1")
 	if err != nil {
 		t.Fatalf("acpGetMetrics: %v", err)
 	}
-	if m.TotalTokens != 5000 {
-		t.Errorf("total_tokens = %d, want 5000", m.TotalTokens)
+	if m == nil {
+		t.Fatal("expected non-nil metrics")
 	}
-	if m.ToolCalls != 15 {
-		t.Errorf("tool_calls = %d, want 15", m.ToolCalls)
-	}
-
-	// Test error case
-	_, err = acpGetMetrics(cfg, "sess-err")
-	if err == nil {
-		t.Error("acpGetMetrics should error on 500")
+	if m.TotalTokens != 0 {
+		t.Errorf("total_tokens = %d, want 0 (backend doesn't provide metrics)", m.TotalTokens)
 	}
 }
 
 func TestACPGetSession(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/v1/sessions/sess-exists" {
+		if r.Method == "GET" && r.URL.Path == testSessionsPath+"/sess-exists" {
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":     "sess-exists",
-				"status": "running",
-				"labels": map[string]string{"boss-agent": "TestAgent"},
-			})
+			json.NewEncoder(w).Encode(backendCR("sess-exists", "running", map[string]string{"boss-agent": "TestAgent"}))
 			return
 		}
-		if r.URL.Path == "/v1/sessions/sess-notfound" {
+		if r.URL.Path == testSessionsPath+"/sess-notfound" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -305,16 +326,9 @@ func TestACPGetSession(t *testing.T) {
 
 func TestACPGetOutput(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/v1/sessions/sess-1/output" {
-			runID := r.URL.Query().Get("run_id")
-			if runID == "run-123" {
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"events":[{"type":"output","content":"filtered"}]}`))
-				return
-			}
-			// No runID filter
+		if r.Method == "GET" && r.URL.Path == testSessionsPath+"/sess-1/export" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"events":[{"type":"output","content":"all output"}]}`))
+			w.Write([]byte(`{"aguiEvents":[{"type":"output","content":"all output"}],"legacyMessages":[]}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -323,7 +337,6 @@ func TestACPGetOutput(t *testing.T) {
 
 	cfg := testACPConfig(srv.URL)
 
-	// Test without runID filter
 	output, err := acpGetOutput(cfg, "sess-1", "")
 	if err != nil {
 		t.Fatalf("acpGetOutput: %v", err)
@@ -332,29 +345,21 @@ func TestACPGetOutput(t *testing.T) {
 		t.Errorf("output = %s, want to contain 'all output'", string(output))
 	}
 
-	// Test with runID filter
+	// runID parameter is accepted but ignored (export returns all events)
 	output, err = acpGetOutput(cfg, "sess-1", "run-123")
 	if err != nil {
 		t.Fatalf("acpGetOutput (with runID): %v", err)
 	}
-	if !strings.Contains(string(output), "filtered") {
-		t.Errorf("output = %s, want to contain 'filtered'", string(output))
+	if !strings.Contains(string(output), "all output") {
+		t.Errorf("output = %s, want to contain 'all output'", string(output))
 	}
 }
 
 func TestACPGetTranscript(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/v1/sessions/sess-1/transcript" {
-			format := r.URL.Query().Get("format")
-			if format == "" {
-				format = "json"
-			}
+		if r.Method == "GET" && r.URL.Path == testSessionsPath+"/sess-1/export" {
 			w.WriteHeader(http.StatusOK)
-			if format == "json" {
-				w.Write([]byte(`{"messages":[{"role":"user","content":"hello"}]}`))
-			} else if format == "text" {
-				w.Write([]byte(`User: hello\nAssistant: hi`))
-			}
+			w.Write([]byte(`{"aguiEvents":[{"type":"messages_snapshot"}],"legacyMessages":[{"role":"user","content":"hello"}]}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -363,31 +368,22 @@ func TestACPGetTranscript(t *testing.T) {
 
 	cfg := testACPConfig(srv.URL)
 
-	// Test default format (json)
+	// acpGetTranscript delegates to export endpoint
 	transcript, err := acpGetTranscript(cfg, "sess-1", "")
 	if err != nil {
 		t.Fatalf("acpGetTranscript: %v", err)
 	}
-	if !strings.Contains(string(transcript), "messages") {
-		t.Errorf("transcript = %s, want to contain 'messages'", string(transcript))
+	if !strings.Contains(string(transcript), "legacyMessages") {
+		t.Errorf("transcript = %s, want to contain 'legacyMessages'", string(transcript))
 	}
 
-	// Test explicit json format
+	// Format parameter accepted but export always returns full shape
 	transcript, err = acpGetTranscript(cfg, "sess-1", "json")
 	if err != nil {
 		t.Fatalf("acpGetTranscript (json): %v", err)
 	}
-	if !strings.Contains(string(transcript), "messages") {
-		t.Errorf("transcript = %s, want to contain 'messages'", string(transcript))
-	}
-
-	// Test text format
-	transcript, err = acpGetTranscript(cfg, "sess-1", "text")
-	if err != nil {
-		t.Fatalf("acpGetTranscript (text): %v", err)
-	}
-	if !strings.Contains(string(transcript), "User: hello") {
-		t.Errorf("transcript = %s, want to contain 'User: hello'", string(transcript))
+	if !strings.Contains(string(transcript), "legacyMessages") {
+		t.Errorf("transcript = %s, want to contain 'legacyMessages'", string(transcript))
 	}
 }
 
@@ -395,15 +391,10 @@ func TestServerLaunchAgentHandler(t *testing.T) {
 	// Mock ACP server
 	var createCalled bool
 	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && r.URL.Path == "/v1/sessions" {
+		if r.Method == "POST" && r.URL.Path == testSessionsPath {
 			createCalled = true
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"id": "launched-session-1"})
-			return
-		}
-		if r.Method == "PATCH" {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"id": "launched-session-1"})
+			json.NewEncoder(w).Encode(backendCR("launched-session-1", "pending", nil))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -444,21 +435,19 @@ func TestServerLaunchAgentHandler(t *testing.T) {
 }
 
 func TestServerSessionStatusHandler(t *testing.T) {
-	// Mock ACP server that returns running for any session
+	// Mock ACP server
 	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/metrics") {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{"total_tokens": 100})
-			return
-		}
-		if r.Method == "GET" && strings.Contains(r.URL.Path, "/v1/sessions/") {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"id": "s1", "status": "running"})
-			return
-		}
-		if r.Method == "GET" && r.URL.Path == "/v1/sessions" {
+		if r.Method == "GET" && r.URL.Path == testSessionsPath {
+			// List sessions (for auto-discover)
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]interface{}{"items": []interface{}{}})
+			return
+		}
+		if r.Method == "GET" && strings.HasPrefix(r.URL.Path, testSessionsPath+"/") {
+			// Get individual session phase
+			sessionName := strings.TrimPrefix(r.URL.Path, testSessionsPath+"/")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(backendCR(sessionName, "running", nil))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -505,5 +494,62 @@ func TestServerSessionStatusHandler(t *testing.T) {
 	}
 	if !found {
 		t.Error("agent 'Api' not found in session status")
+	}
+}
+
+func TestMatchLabels(t *testing.T) {
+	tests := []struct {
+		name string
+		have map[string]string
+		want map[string]string
+		ok   bool
+	}{
+		{"nil want matches anything", map[string]string{"a": "1"}, nil, true},
+		{"empty want matches anything", map[string]string{"a": "1"}, map[string]string{}, true},
+		{"exact match", map[string]string{"a": "1"}, map[string]string{"a": "1"}, true},
+		{"subset match", map[string]string{"a": "1", "b": "2"}, map[string]string{"a": "1"}, true},
+		{"mismatch value", map[string]string{"a": "1"}, map[string]string{"a": "2"}, false},
+		{"missing key", map[string]string{"a": "1"}, map[string]string{"b": "1"}, false},
+		{"nil have", nil, map[string]string{"a": "1"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchLabels(tt.have, tt.want); got != tt.ok {
+				t.Errorf("matchLabels(%v, %v) = %v, want %v", tt.have, tt.want, got, tt.ok)
+			}
+		})
+	}
+}
+
+func TestBackendSessionCRToSessionStatus(t *testing.T) {
+	cr := backendSessionCR{}
+	cr.Metadata.Name = "test-session"
+	cr.Metadata.Labels = map[string]string{"boss-agent": "TestAgent"}
+	cr.Metadata.CreationTimestamp = "2026-03-07T12:00:00Z"
+	cr.Spec.DisplayName = "Test Agent"
+	cr.Status.Phase = "running"
+
+	s := cr.toSessionStatus()
+	if s.ID != "test-session" {
+		t.Errorf("ID = %q, want test-session", s.ID)
+	}
+	if s.Status != "running" {
+		t.Errorf("Status = %q, want running", s.Status)
+	}
+	if s.DisplayName != "Test Agent" {
+		t.Errorf("DisplayName = %q, want Test Agent", s.DisplayName)
+	}
+	if s.Labels["boss-agent"] != "TestAgent" {
+		t.Errorf("Labels[boss-agent] = %q, want TestAgent", s.Labels["boss-agent"])
+	}
+}
+
+func TestSessionsPath(t *testing.T) {
+	cfg := &ACPConfig{Project: "my-project"}
+	if got := cfg.sessionsPath(); got != "/api/projects/my-project/agentic-sessions" {
+		t.Errorf("sessionsPath() = %q", got)
+	}
+	if got := cfg.sessionPath("sess-1"); got != "/api/projects/my-project/agentic-sessions/sess-1" {
+		t.Errorf("sessionPath() = %q", got)
 	}
 }

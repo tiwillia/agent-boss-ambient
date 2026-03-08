@@ -83,7 +83,7 @@ Environment:
   BOSS_URL            Server URL (default: http://localhost:8899)
   COORDINATOR_PORT    Server port (serve only, default: 8899)
   DATA_DIR            Data directory (serve only, default: ./data)
-  ACP_URL             ACP public-api gateway URL
+  ACP_URL             ACP backend API URL
   ACP_TOKEN           ACP bearer token
   ACP_PROJECT         ACP project name
   ACP_MODEL           ACP model (default: claude-sonnet-4)
