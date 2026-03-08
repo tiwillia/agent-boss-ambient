@@ -11,7 +11,7 @@ Quick reference for common operational tasks and incident response.
 kubectl get pods -n ambient-code -l app=boss-coordinator
 
 # Verify active spaces
-curl -s https://boss-coordinator-agent-boss.apps.okd1.timslab/spaces | jq
+curl -s $BOSS_URL/spaces | jq
 
 # Check disk usage
 kubectl exec -n ambient-code deployment/boss-coordinator -- df -h /data
@@ -400,7 +400,7 @@ When something goes wrong, check in this order:
 
 ## Useful Links
 
-- **Dashboard:** https://boss-coordinator-agent-boss.apps.okd1.timslab/
+- **Dashboard:** `$BOSS_URL` (set via environment variable)
 - **Source:** https://github.com/tiwillia/agent-boss-ambient
 - **Deployment Config:** `/workspace/repos/agent-boss-ambient/deploy/k8s/`
 - **Build Instructions:** `/workspace/repos/agent-boss-ambient/CLAUDE.md`
