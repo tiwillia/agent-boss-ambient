@@ -80,11 +80,13 @@ npx playwright test --debug
 
 ```
 e2e/
-├── package.json           # Playwright dependency
-├── playwright.config.js   # Browser config, baseURL, timeouts
+├── package.json                     # Playwright dependency
+├── playwright.config.js             # Browser config, baseURL, timeouts
 ├── tests/
-│   └── space-crud.spec.js # Space create/view/delete workflow
-└── README.md              # This file
+│   ├── space-crud.spec.js          # Space create/view/delete workflow
+│   ├── agent-operations.spec.js    # Agent management operations
+│   └── complete-workflows.spec.js  # End-to-end workflows
+└── README.md                        # This file
 ```
 
 ## Test Coverage
@@ -100,6 +102,27 @@ Tests the complete knowledge space lifecycle:
 6. Return to homepage
 7. Delete the space
 8. Verify space removed from list
+
+### agent-operations.spec.js
+
+Tests agent management operations:
+1. **Create agent**: Launch agent modal, fill task prompt and repositories, verify agent created
+2. **Edit agent**: Open edit modal, update task prompt/repos/heartbeat interval, verify changes saved
+3. **Delete agent**: Click delete button, confirm deletion, verify agent removed
+4. **Multi-agent**: Create multiple agents in one space, verify all agents coexist
+5. **Launch session**: Verify UI flow for launching ACP sessions (requires ACP configuration)
+
+Each test creates its own space and cleans up after completion.
+
+### complete-workflows.spec.js
+
+Tests end-to-end workflows:
+1. **Multi-agent collaboration**: Create space with leader, developer, and reviewer agents, verify collaborative environment
+2. **Agent + contracts**: Create agent, verify contracts section appears beneath agents (Issue #34)
+3. **Heartbeat check-in**: Enable heartbeat interval via edit modal, verify feature works (Issue #29)
+4. **Edit button fix**: Verify edit button opens modal with populated fields (Issue #30 regression test)
+
+These tests validate complete user workflows and feature integrations.
 
 ## Configuration
 
