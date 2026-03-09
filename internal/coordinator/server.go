@@ -1898,6 +1898,7 @@ func (s *Server) checkAllAgentHealth() {
 }
 
 // executeRecoveryActions performs configured recovery actions when health issues are detected
+// NOTE: Caller must hold s.mu lock
 func (s *Server) executeRecoveryActions(spaceName, agentName string, health *HealthStatus, config *HealthConfig, agent *AgentUpdate) {
 	for _, issue := range health.Issues {
 		// Determine the event type from the issue
@@ -1923,11 +1924,9 @@ func (s *Server) executeRecoveryActions(spaceName, agentName string, health *Hea
 			action = ActionNotify // default action
 		}
 
-		// Record the health event
-		s.mu.Lock()
+		// Record the health event (caller already holds lock)
 		ks := s.spaces[spaceName]
 		RecordHealthEvent(ks, agentName, eventType, health.Level, issue, action)
-		s.mu.Unlock()
 
 		// Execute the recovery action
 		switch action {
