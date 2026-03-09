@@ -133,6 +133,20 @@ Spaces are independent coordination contexts. Each space is a KnowledgeSpace wit
 | `GET/POST` | `/spaces/{space}/contracts` | Shared contracts (text) |
 | `GET/POST` | `/spaces/{space}/archive` | Archive of resolved items (text) |
 
+### Metrics and Observability
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/spaces/{space}/metrics` | Metrics data as JSON (agent, coordination, system metrics) |
+| `GET` | `/spaces/{space}/dashboard/metrics` | HTML metrics dashboard with auto-refresh |
+
+**Metrics tracked:**
+- **Agent metrics:** Time in each status, check-in frequency, task completion time
+- **Coordination metrics:** Active/idle/blocked agent counts, concurrent work items
+- **System metrics:** Request count, error count, API latency (avg, p50, p95, p99)
+
+The metrics endpoint returns current snapshot + historical data with configurable retention (default: 24h).
+
 ### Backward Compatibility
 
 Routes without `/spaces/` prefix operate on the `"default"` space:
