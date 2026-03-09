@@ -483,8 +483,11 @@ func (s *Server) handleSpaceRoute(w http.ResponseWriter, r *http.Request) {
 		if len(parts) == 3 {
 			agentName := strings.TrimRight(parts[2], "/")
 			s.handleAgentMetrics(w, r, spaceName, agentName)
+		} else if len(parts) == 2 {
+			// Space-level metrics (Issue #43)
+			s.handleMetrics(w, r, spaceName)
 		} else {
-			http.Error(w, "agent name required", http.StatusBadRequest)
+			http.Error(w, "invalid metrics path", http.StatusBadRequest)
 		}
 	case "transcript":
 		if len(parts) == 3 {
@@ -511,6 +514,12 @@ func (s *Server) handleSpaceRoute(w http.ResponseWriter, r *http.Request) {
 		case "metrics":
 			s.handleInterruptMetrics(w, r, spaceName)
 		default:
+			http.NotFound(w, r)
+		}
+	case "dashboard":
+		if len(parts) == 3 && parts[2] == "metrics" {
+			s.handleMetricsDashboard(w, r, spaceName)
+		} else {
 			http.NotFound(w, r)
 		}
 	default:
@@ -760,7 +769,9 @@ func (s *Server) handleSpaceAgent(w http.ResponseWriter, r *http.Request, spaceN
 		update.UpdatedAt = time.Now().UTC()
 
 		s.mu.Lock()
+		var oldStatus string
 		if existing, ok := ks.Agents[canonical]; ok {
+			oldStatus = string(existing.Status)
 			if update.ACPSessionID == "" && existing.ACPSessionID != "" {
 				update.ACPSessionID = existing.ACPSessionID
 			}
@@ -780,6 +791,12 @@ func (s *Server) handleSpaceAgent(w http.ResponseWriter, r *http.Request, spaceN
 		}
 
 		ks.Agents[canonical] = &update
+
+		// Record metrics for status change (Issue #43)
+		if ks.MetricsStore != nil {
+			ks.MetricsStore.RecordAgentStatusChange(canonical, oldStatus, string(update.Status))
+		}
+
 		ks.UpdatedAt = time.Now().UTC()
 		if err := s.saveSpace(ks); err != nil {
 			s.mu.Unlock()
@@ -1903,4 +1920,188 @@ func truncateLine(s string, maxLen int) string {
 		return line[:maxLen-3] + "..."
 	}
 	return line
+}
+
+// handleMetrics serves metrics data as JSON (Issue #43)
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request, spaceName string) {
+	ks, ok := s.getSpace(spaceName)
+	if !ok {
+		http.Error(w, fmt.Sprintf("space %q not found", spaceName), http.StatusNotFound)
+		return
+	}
+
+	if ks.MetricsStore == nil {
+		http.Error(w, "metrics not enabled for this space", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Get current snapshot and history
+	snapshot := ks.MetricsStore.GetSnapshot()
+	history := ks.MetricsStore.GetHistory()
+
+	response := map[string]interface{}{
+		"space":             spaceName,
+		"timestamp":         time.Now().UTC(),
+		"current_snapshot":  snapshot,
+		"history_count":     len(history),
+		"history":           history,
+		"retention_period":  ks.MetricsStore.Config.RetentionPeriod.String(),
+		"snapshot_interval": ks.MetricsStore.Config.SnapshotInterval.String(),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleMetricsDashboard serves the metrics dashboard HTML (Issue #43)
+func (s *Server) handleMetricsDashboard(w http.ResponseWriter, r *http.Request, spaceName string) {
+	ks, ok := s.getSpace(spaceName)
+	if !ok {
+		http.Error(w, fmt.Sprintf("space %q not found", spaceName), http.StatusNotFound)
+		return
+	}
+
+	if ks.MetricsStore == nil {
+		http.Error(w, "metrics not enabled for this space", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Simple HTML dashboard (will be enhanced with Chart.js)
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Metrics Dashboard - %s</title>
+	<style>
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+			margin: 0;
+			padding: 20px;
+			background: #f5f5f5;
+		}
+		.container {
+			max-width: 1200px;
+			margin: 0 auto;
+		}
+		h1 {
+			color: #333;
+		}
+		.metrics-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+			gap: 20px;
+			margin-top: 20px;
+		}
+		.metric-card {
+			background: white;
+			border-radius: 8px;
+			padding: 20px;
+			box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+		}
+		.metric-card h2 {
+			margin: 0 0 15px 0;
+			font-size: 18px;
+			color: #666;
+		}
+		.metric-value {
+			font-size: 32px;
+			font-weight: bold;
+			color: #333;
+		}
+		.metric-label {
+			font-size: 14px;
+			color: #888;
+			margin-top: 5px;
+		}
+		.agent-list {
+			list-style: none;
+			padding: 0;
+		}
+		.agent-list li {
+			padding: 8px;
+			border-bottom: 1px solid #eee;
+			display: flex;
+			justify-content: space-between;
+		}
+		.status-active { color: #4caf50; }
+		.status-idle { color: #ff9800; }
+		.status-blocked { color: #f44336; }
+	</style>
+</head>
+<body>
+	<div class="container">
+		<h1>Metrics Dashboard: %s</h1>
+		<div class="metrics-grid" id="metrics-grid">
+			<div class="metric-card">
+				<h2>Loading metrics...</h2>
+			</div>
+		</div>
+	</div>
+	<script>
+		// Fetch and display metrics
+		fetch('/spaces/%s/metrics')
+			.then(response => response.json())
+			.then(data => {
+				const grid = document.getElementById('metrics-grid');
+				grid.innerHTML = '';
+
+				// Coordination metrics
+				const coord = data.current_snapshot.coordination;
+				let html = '<div class="metric-card"><h2>Active Agents</h2>';
+				html += '<div class="metric-value">' + coord.active_agents + '</div>';
+				html += '<div class="metric-label">of ' + coord.total_agents + ' total</div></div>';
+
+				html += '<div class="metric-card"><h2>Idle Agents</h2>';
+				html += '<div class="metric-value">' + coord.idle_agents + '</div></div>';
+
+				html += '<div class="metric-card"><h2>Blocked Agents</h2>';
+				html += '<div class="metric-value">' + coord.blocked_agents + '</div></div>';
+
+				html += '<div class="metric-card"><h2>Concurrent Work</h2>';
+				html += '<div class="metric-value">' + coord.concurrent_work_items + '</div>';
+				html += '<div class="metric-label">active tasks</div></div>';
+
+				// System metrics
+				const sys = data.current_snapshot.system;
+				html += '<div class="metric-card"><h2>Request Count</h2>';
+				html += '<div class="metric-value">' + sys.request_count + '</div></div>';
+
+				html += '<div class="metric-card"><h2>Error Count</h2>';
+				html += '<div class="metric-value">' + sys.error_count + '</div></div>';
+
+				html += '<div class="metric-card"><h2>Avg Response Time</h2>';
+				html += '<div class="metric-value">' + sys.avg_response_time_ms.toFixed(2) + 'ms</div></div>';
+
+				html += '<div class="metric-card"><h2>P95 Response Time</h2>';
+				html += '<div class="metric-value">' + sys.p95_response_time_ms.toFixed(2) + 'ms</div></div>';
+
+				// Agent metrics
+				const agents = data.current_snapshot.agent_metrics;
+				if (agents && Object.keys(agents).length > 0) {
+					html += '<div class="metric-card" style="grid-column: 1 / -1;"><h2>Agent Metrics</h2><ul class="agent-list">';
+					for (const [name, metrics] of Object.entries(agents)) {
+						const statusClass = 'status-' + metrics.current_status;
+						html += '<li><span>' + name + '</span>';
+						html += '<span class="' + statusClass + '">' + metrics.current_status;
+						html += ' (' + metrics.total_status_updates + ' updates)</span></li>';
+					}
+					html += '</ul></div>';
+				}
+
+				grid.innerHTML = html;
+			})
+			.catch(err => {
+				document.getElementById('metrics-grid').innerHTML =
+					'<div class="metric-card"><h2>Error loading metrics</h2><p>' + err + '</p></div>';
+			});
+
+		// Auto-refresh every 30 seconds
+		setInterval(() => location.reload(), 30000);
+	</script>
+</body>
+</html>`, spaceName, spaceName, spaceName)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(html))
 }

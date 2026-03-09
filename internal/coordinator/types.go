@@ -86,6 +86,7 @@ type KnowledgeSpace struct {
 	Agents          map[string]*AgentUpdate `json:"agents"`
 	SharedContracts string                  `json:"shared_contracts,omitempty"`
 	Archive         string                  `json:"archive,omitempty"`
+	MetricsStore    *MetricsStore           `json:"-"` // Not serialized to JSON (transient)
 	CreatedAt       time.Time               `json:"created_at"`
 	UpdatedAt       time.Time               `json:"updated_at"`
 }
@@ -93,10 +94,11 @@ type KnowledgeSpace struct {
 func NewKnowledgeSpace(name string) *KnowledgeSpace {
 	now := time.Now().UTC()
 	return &KnowledgeSpace{
-		Name:      name,
-		Agents:    make(map[string]*AgentUpdate),
-		CreatedAt: now,
-		UpdatedAt: now,
+		Name:         name,
+		Agents:       make(map[string]*AgentUpdate),
+		MetricsStore: NewMetricsStore(nil), // Use default config
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 }
 
