@@ -62,7 +62,7 @@ func NewServer(port, dataDir string) *Server {
 	}
 
 	var acpCfg *ACPConfig
-	if u := os.Getenv("ACP_URL"); u != "" {
+	if u := os.Getenv("ACP_URL"); u != "" { // ACP backend API URL
 		model := os.Getenv("ACP_MODEL")
 		if model == "" {
 			model = acpDefaultModel

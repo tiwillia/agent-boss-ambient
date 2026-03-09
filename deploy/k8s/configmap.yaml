@@ -4,8 +4,8 @@ metadata:
   name: boss-config
   namespace: ambient-code
 data:
-  # ACP public-api gateway URL
-  ACP_URL: "https://public-api-ambient.apps.okd1.timslab"
+  # ACP backend API URL (set to your cluster's backend API route)
+  ACP_URL: ""
   # ACP project name
   ACP_PROJECT: "default"
   # Default model for ACP sessions

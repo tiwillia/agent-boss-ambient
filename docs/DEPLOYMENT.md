@@ -235,7 +235,7 @@ spec:
 | `DATA_DIR` | Hardcoded | `/data` | Persistence directory in container |
 | `COORDINATOR_PORT` | ConfigMap | `8899` | HTTP listen port |
 | `BOSS_EXTERNAL_URL` | ConfigMap | - | URL where ACP pods reach Boss |
-| `ACP_URL` | ConfigMap | - | ACP public API gateway URL |
+| `ACP_URL` | ConfigMap | - | ACP backend API URL |
 | `ACP_PROJECT` | ConfigMap | `default` | ACP project name |
 | `ACP_MODEL` | ConfigMap | `claude-sonnet-4` | Default Claude model |
 | `ACP_TIMEOUT` | ConfigMap | `900` | Session timeout (seconds) |

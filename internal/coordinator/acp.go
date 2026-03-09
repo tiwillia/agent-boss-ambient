@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -24,7 +25,7 @@ const (
 
 // ACPConfig holds ACP REST API connection settings.
 type ACPConfig struct {
-	BaseURL string // ACP public-api gateway URL
+	BaseURL string // ACP backend API URL
 	Token   string // Bearer token
 	Project string // ACP project name
 	Model   string // Default model (e.g. "claude-sonnet-4")
@@ -49,9 +50,52 @@ type acpMetrics struct {
 	ToolCalls       int     `json:"tool_calls,omitempty"`
 }
 
+// backendSessionCR represents the K8s CR shape returned by the backend API.
+type backendSessionCR struct {
+	Metadata struct {
+		Name              string            `json:"name"`
+		Labels            map[string]string `json:"labels,omitempty"`
+		CreationTimestamp string            `json:"creationTimestamp,omitempty"`
+	} `json:"metadata"`
+	Spec struct {
+		DisplayName string `json:"displayName,omitempty"`
+	} `json:"spec"`
+	Status struct {
+		Phase string `json:"phase,omitempty"`
+	} `json:"status"`
+}
+
+func (cr *backendSessionCR) toSessionStatus() acpSessionStatus {
+	displayName := cr.Spec.DisplayName
+	if displayName == "" {
+		displayName = cr.Metadata.Name
+	}
+	var createdAt time.Time
+	if cr.Metadata.CreationTimestamp != "" {
+		createdAt, _ = time.Parse(time.RFC3339, cr.Metadata.CreationTimestamp)
+	}
+	return acpSessionStatus{
+		ID:          cr.Metadata.Name,
+		Status:      strings.ToLower(cr.Status.Phase),
+		DisplayName: displayName,
+		CreatedAt:   createdAt,
+		Labels:      cr.Metadata.Labels,
+	}
+}
+
 // acpAvailable returns true if ACP configuration is set.
 func acpAvailable(cfg *ACPConfig) bool {
 	return cfg != nil && cfg.BaseURL != "" && cfg.Token != "" && cfg.Project != ""
+}
+
+// sessionsPath returns the backend API path prefix for agentic sessions.
+func (cfg *ACPConfig) sessionsPath() string {
+	return "/api/projects/" + cfg.Project + "/agentic-sessions"
+}
+
+// sessionPath returns the backend API path for a specific session.
+func (cfg *ACPConfig) sessionPath(sessionID string) string {
+	return cfg.sessionsPath() + "/" + sessionID
 }
 
 func newACPHTTPClient() *http.Client {
@@ -83,7 +127,6 @@ func (cfg *ACPConfig) doRequest(method, path string, body interface{}) ([]byte, 
 		return nil, 0, fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
-	req.Header.Set("X-Ambient-Project", cfg.Project)
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -114,17 +157,40 @@ func (cfg *ACPConfig) doRequestWithQuery(method, path string, params map[string]
 	return cfg.doRequest(method, path, nil)
 }
 
+// generateMsgID produces a random hex string for AG-UI message IDs.
+func generateMsgID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return fmt.Sprintf("%x", b)
+}
+
+// matchLabels returns true if all required labels are present with matching values.
+func matchLabels(have, want map[string]string) bool {
+	for k, v := range want {
+		if have[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
 // acpCreateSession creates a new ACP session for an agent.
-// Returns the session ID on success.
+// Returns the session name on success.
 func acpCreateSession(cfg *ACPConfig, agentName, spaceName, task string, repos []string) (string, error) {
 	type repoEntry struct {
 		URL string `json:"url"`
 	}
+	type llmSettings struct {
+		Model string `json:"model"`
+	}
 	type createReq struct {
-		Task        string      `json:"task"`
-		DisplayName string      `json:"display_name,omitempty"`
-		Model       string      `json:"model,omitempty"`
-		Repos       []repoEntry `json:"repos,omitempty"`
+		InitialPrompt string            `json:"initialPrompt"`
+		DisplayName   string            `json:"displayName,omitempty"`
+		RunnerType    string            `json:"runnerType"`
+		LLMSettings   llmSettings       `json:"llmSettings"`
+		Timeout       int               `json:"timeout"`
+		Repos         []repoEntry       `json:"repos,omitempty"`
+		Labels        map[string]string `json:"labels,omitempty"`
 	}
 
 	model := cfg.Model
@@ -132,10 +198,22 @@ func acpCreateSession(cfg *ACPConfig, agentName, spaceName, task string, repos [
 		model = acpDefaultModel
 	}
 
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = acpDefaultTimeout
+	}
+
 	reqBody := createReq{
-		Task:        task,
-		DisplayName: agentName,
-		Model:       model,
+		InitialPrompt: task,
+		DisplayName:   agentName,
+		RunnerType:    "claude-agent-sdk",
+		LLMSettings:   llmSettings{Model: model},
+		Timeout:       timeout,
+		Labels: map[string]string{
+			"boss-space": spaceName,
+			"boss-agent": agentName,
+			"managed-by": "agent-boss",
+		},
 	}
 	for _, r := range repos {
 		if r != "" {
@@ -143,7 +221,7 @@ func acpCreateSession(cfg *ACPConfig, agentName, spaceName, task string, repos [
 		}
 	}
 
-	data, code, err := cfg.doRequest("POST", "/v1/sessions", reqBody)
+	data, code, err := cfg.doRequest("POST", cfg.sessionsPath(), reqBody)
 	if err != nil {
 		return "", err
 	}
@@ -151,47 +229,39 @@ func acpCreateSession(cfg *ACPConfig, agentName, spaceName, task string, repos [
 		return "", fmt.Errorf("create session: HTTP %d: %s", code, string(data))
 	}
 
-	var result struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
+	var cr backendSessionCR
+	if err := json.Unmarshal(data, &cr); err != nil {
 		return "", fmt.Errorf("parse create response: %w", err)
 	}
-	if result.ID == "" {
-		return "", fmt.Errorf("create session: empty ID in response")
+	if cr.Metadata.Name == "" {
+		return "", fmt.Errorf("create session: empty name in response")
 	}
 
-	// Label the session for discovery
-	labels := map[string]string{
-		"boss-space":  spaceName,
-		"boss-agent":  agentName,
-		"managed-by":  "agent-boss",
-	}
-	if err := acpLabelSession(cfg, result.ID, labels); err != nil {
-		// Non-fatal: session is created, labels just won't be set
-		_ = err
-	}
-
-	return result.ID, nil
+	return cr.Metadata.Name, nil
 }
 
-// acpLabelSession sets labels on an existing ACP session.
-func acpLabelSession(cfg *ACPConfig, sessionID string, labels map[string]string) error {
-	body := map[string]interface{}{"labels": labels}
-	data, code, err := cfg.doRequest("PATCH", "/v1/sessions/"+sessionID, body)
-	if err != nil {
-		return err
-	}
-	if code < 200 || code >= 300 {
-		return fmt.Errorf("label session: HTTP %d: %s", code, string(data))
-	}
-	return nil
-}
-
-// acpSendMessage sends a message to an ACP session.
+// acpSendMessage sends a message to an ACP session via the AG-UI run endpoint.
 func acpSendMessage(cfg *ACPConfig, sessionID, content string) error {
-	body := map[string]string{"content": content}
-	data, code, err := cfg.doRequest("POST", "/v1/sessions/"+sessionID+"/message", body)
+	type aguiMessage struct {
+		ID      string `json:"id"`
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	type runInput struct {
+		Messages []aguiMessage `json:"messages"`
+	}
+
+	body := runInput{
+		Messages: []aguiMessage{
+			{
+				ID:      generateMsgID(),
+				Role:    "user",
+				Content: content,
+			},
+		},
+	}
+
+	data, code, err := cfg.doRequest("POST", cfg.sessionPath(sessionID)+"/agui/run", body)
 	if err != nil {
 		return err
 	}
@@ -201,9 +271,9 @@ func acpSendMessage(cfg *ACPConfig, sessionID, content string) error {
 	return nil
 }
 
-// acpGetSessionPhase retrieves the current status/phase of an ACP session.
+// acpGetSessionPhase retrieves the current phase of an ACP session.
 func acpGetSessionPhase(cfg *ACPConfig, sessionID string) (string, error) {
-	data, code, err := cfg.doRequest("GET", "/v1/sessions/"+sessionID, nil)
+	data, code, err := cfg.doRequest("GET", cfg.sessionPath(sessionID), nil)
 	if err != nil {
 		return "", err
 	}
@@ -213,18 +283,16 @@ func acpGetSessionPhase(cfg *ACPConfig, sessionID string) (string, error) {
 	if code < 200 || code >= 300 {
 		return "", fmt.Errorf("get session: HTTP %d: %s", code, string(data))
 	}
-	var result struct {
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
+	var cr backendSessionCR
+	if err := json.Unmarshal(data, &cr); err != nil {
 		return "", fmt.Errorf("parse session response: %w", err)
 	}
-	return result.Status, nil
+	return strings.ToLower(cr.Status.Phase), nil
 }
 
 // acpGetSession retrieves full session details.
 func acpGetSession(cfg *ACPConfig, sessionID string) (*acpSessionStatus, error) {
-	data, code, err := cfg.doRequest("GET", "/v1/sessions/"+sessionID, nil)
+	data, code, err := cfg.doRequest("GET", cfg.sessionPath(sessionID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -234,26 +302,22 @@ func acpGetSession(cfg *ACPConfig, sessionID string) (*acpSessionStatus, error) 
 	if code < 200 || code >= 300 {
 		return nil, fmt.Errorf("get session: HTTP %d: %s", code, string(data))
 	}
-	var s acpSessionStatus
-	if err := json.Unmarshal(data, &s); err != nil {
+	var cr backendSessionCR
+	if err := json.Unmarshal(data, &cr); err != nil {
 		return nil, fmt.Errorf("parse session: %w", err)
 	}
+	s := cr.toSessionStatus()
 	return &s, nil
 }
 
-// acpListSessions lists ACP sessions matching a label selector.
+// acpListSessions lists ACP sessions, optionally filtering by labels client-side.
 // labels is a map of key=value pairs; empty map returns all sessions.
 func acpListSessions(cfg *ACPConfig, labels map[string]string) ([]acpSessionStatus, error) {
-	params := map[string]string{}
-	if len(labels) > 0 {
-		var parts []string
-		for k, v := range labels {
-			parts = append(parts, k+"="+v)
-		}
-		params["labelSelector"] = strings.Join(parts, ",")
+	params := map[string]string{
+		"pageSize": "200",
 	}
 
-	data, code, err := cfg.doRequestWithQuery("GET", "/v1/sessions", params)
+	data, code, err := cfg.doRequestWithQuery("GET", cfg.sessionsPath(), params)
 	if err != nil {
 		return nil, err
 	}
@@ -262,18 +326,25 @@ func acpListSessions(cfg *ACPConfig, labels map[string]string) ([]acpSessionStat
 	}
 
 	var result struct {
-		Items []acpSessionStatus `json:"items"`
+		Items []backendSessionCR `json:"items"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, fmt.Errorf("parse sessions: %w", err)
 	}
-	return result.Items, nil
+
+	var sessions []acpSessionStatus
+	for _, cr := range result.Items {
+		s := cr.toSessionStatus()
+		if matchLabels(s.Labels, labels) {
+			sessions = append(sessions, s)
+		}
+	}
+	return sessions, nil
 }
 
 // acpStopSession stops a running ACP session.
 func acpStopSession(cfg *ACPConfig, sessionID string) error {
-	body := map[string]bool{"stopped": true}
-	data, code, err := cfg.doRequest("PATCH", "/v1/sessions/"+sessionID, body)
+	data, code, err := cfg.doRequest("POST", cfg.sessionPath(sessionID)+"/stop", nil)
 	if err != nil {
 		return err
 	}
@@ -285,7 +356,7 @@ func acpStopSession(cfg *ACPConfig, sessionID string) error {
 
 // acpDeleteSession deletes an ACP session.
 func acpDeleteSession(cfg *ACPConfig, sessionID string) error {
-	data, code, err := cfg.doRequest("DELETE", "/v1/sessions/"+sessionID, nil)
+	data, code, err := cfg.doRequest("DELETE", cfg.sessionPath(sessionID), nil)
 	if err != nil {
 		return err
 	}
@@ -298,14 +369,9 @@ func acpDeleteSession(cfg *ACPConfig, sessionID string) error {
 	return nil
 }
 
-// acpGetOutput retrieves AG-UI events/output for an ACP session.
-// Optionally filter by runID.
+// acpGetOutput retrieves AG-UI events for an ACP session via the export endpoint.
 func acpGetOutput(cfg *ACPConfig, sessionID, runID string) (json.RawMessage, error) {
-	params := map[string]string{}
-	if runID != "" {
-		params["run_id"] = runID
-	}
-	data, code, err := cfg.doRequestWithQuery("GET", "/v1/sessions/"+sessionID+"/output", params)
+	data, code, err := cfg.doRequest("GET", cfg.sessionPath(sessionID)+"/export", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -315,36 +381,17 @@ func acpGetOutput(cfg *ACPConfig, sessionID, runID string) (json.RawMessage, err
 	return json.RawMessage(data), nil
 }
 
-// acpGetMetrics retrieves usage metrics for an ACP session.
+// acpGetMetrics is not directly supported by the backend API.
+// Returns empty metrics.
 func acpGetMetrics(cfg *ACPConfig, sessionID string) (*acpMetrics, error) {
-	data, code, err := cfg.doRequest("GET", "/v1/sessions/"+sessionID+"/metrics", nil)
-	if err != nil {
-		return nil, err
-	}
-	if code < 200 || code >= 300 {
-		return nil, fmt.Errorf("get metrics: HTTP %d: %s", code, string(data))
-	}
-	var m acpMetrics
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("parse metrics: %w", err)
-	}
-	return &m, nil
+	return &acpMetrics{}, nil
 }
 
-// acpGetTranscript retrieves the conversation transcript for an ACP session.
+// acpGetTranscript retrieves session output via the export endpoint.
+// The format parameter is accepted for compatibility but the backend always
+// returns the full export shape (aguiEvents + legacyMessages).
 func acpGetTranscript(cfg *ACPConfig, sessionID, format string) (json.RawMessage, error) {
-	if format == "" {
-		format = "json"
-	}
-	params := map[string]string{"format": format}
-	data, code, err := cfg.doRequestWithQuery("GET", "/v1/sessions/"+sessionID+"/transcript", params)
-	if err != nil {
-		return nil, err
-	}
-	if code < 200 || code >= 300 {
-		return nil, fmt.Errorf("get transcript: HTTP %d: %s", code, string(data))
-	}
-	return json.RawMessage(data), nil
+	return acpGetOutput(cfg, sessionID, "")
 }
 
 // ACPAutoDiscover discovers ACP sessions for agents in a space using labels,

@@ -1053,26 +1053,10 @@ func TestDeleteSpaceCleansUpFiles(t *testing.T) {
 }
 
 func TestHandleAgentMetrics(t *testing.T) {
-	// Mock ACP server that returns metrics
-	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && strings.Contains(r.URL.Path, "/metrics") {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"total_tokens":     10000,
-				"input_tokens":     5000,
-				"output_tokens":    5000,
-				"duration_seconds": 250.5,
-				"tool_calls":       25,
-			})
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer acpSrv.Close()
-
+	// Backend API does not have a metrics endpoint; acpGetMetrics returns empty metrics.
 	srv, cleanup := mustStartServer(t)
 	defer cleanup()
-	srv.acpConfig = testACPConfig(acpSrv.URL)
+	srv.acpConfig = testACPConfig("http://unused")
 	base := serverBaseURL(srv)
 
 	// Create an agent with an ACP session
@@ -1083,7 +1067,7 @@ func TestHandleAgentMetrics(t *testing.T) {
 	})
 	resp.Body.Close()
 
-	// Get metrics for the agent using correct route: /spaces/{space}/metrics/{agentName}
+	// Get metrics for the agent — returns empty/zero metrics
 	code, body := getBody(t, base+"/spaces/myspace/metrics/TestAgent")
 	if code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", code, body)
@@ -1093,25 +1077,15 @@ func TestHandleAgentMetrics(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &metrics); err != nil {
 		t.Fatalf("parse metrics: %v", err)
 	}
-	if metrics["total_tokens"].(float64) != 10000 {
-		t.Errorf("total_tokens = %v, want 10000", metrics["total_tokens"])
-	}
-	if metrics["tool_calls"].(float64) != 25 {
-		t.Errorf("tool_calls = %v, want 25", metrics["tool_calls"])
-	}
+	// Backend API doesn't provide metrics, so all values should be zero/absent
 }
 
 func TestHandleAgentTranscript(t *testing.T) {
-	// Mock ACP server that returns transcript
+	// Mock ACP server — transcript now uses the export endpoint
 	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && strings.Contains(r.URL.Path, "/transcript") {
-			format := r.URL.Query().Get("format")
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "/export") {
 			w.WriteHeader(http.StatusOK)
-			if format == "text" {
-				w.Write([]byte("User: hello\nAssistant: hi there"))
-			} else {
-				w.Write([]byte(`{"messages":[{"role":"user","content":"hello"}]}`))
-			}
+			w.Write([]byte(`{"aguiEvents":[],"legacyMessages":[{"role":"user","content":"hello"}]}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -1131,22 +1105,13 @@ func TestHandleAgentTranscript(t *testing.T) {
 	})
 	resp.Body.Close()
 
-	// Get transcript (default json format) using correct route: /spaces/{space}/transcript/{agentName}
+	// Get transcript — now returns export data (aguiEvents + legacyMessages)
 	code, body := getBody(t, base+"/spaces/myspace/transcript/TestAgent")
 	if code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", code, body)
 	}
-	if !strings.Contains(body, "messages") {
-		t.Errorf("transcript should contain 'messages', got: %s", body)
-	}
-
-	// Get transcript (text format)
-	code, body = getBody(t, base+"/spaces/myspace/transcript/TestAgent?format=text")
-	if code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", code, body)
-	}
-	if !strings.Contains(body, "User: hello") {
-		t.Errorf("transcript should contain 'User: hello', got: %s", body)
+	if !strings.Contains(body, "legacyMessages") {
+		t.Errorf("transcript should contain 'legacyMessages', got: %s", body)
 	}
 }
 
@@ -1154,7 +1119,7 @@ func TestHandleDeleteAgent(t *testing.T) {
 	// Mock ACP server that handles session deletion
 	var deleteCalled bool
 	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "DELETE" && strings.Contains(r.URL.Path, "/sessions/") {
+		if r.Method == "DELETE" && strings.Contains(r.URL.Path, "/agentic-sessions/") {
 			deleteCalled = true
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -1521,7 +1486,7 @@ func TestListSpaceNames(t *testing.T) {
 
 func TestACPDeleteSessionNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "DELETE" && strings.Contains(r.URL.Path, "/sessions/notfound") {
+		if r.Method == "DELETE" && strings.Contains(r.URL.Path, "/agentic-sessions/notfound") {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -1536,43 +1501,13 @@ func TestACPDeleteSessionNotFound(t *testing.T) {
 	}
 }
 
-func TestACPLabelSession(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "PATCH" && strings.Contains(r.URL.Path, "/v1/sessions/sess-label") {
-			var body map[string]interface{}
-			json.NewDecoder(r.Body).Decode(&body)
-			if labels, ok := body["labels"].(map[string]interface{}); ok {
-				if labels["test-key"] == "test-value" {
-					w.WriteHeader(http.StatusOK)
-					json.NewEncoder(w).Encode(map[string]string{"id": "sess-label"})
-					return
-				}
-			}
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	cfg := testACPConfig(srv.URL)
-	err := acpLabelSession(cfg, "sess-label", map[string]string{"test-key": "test-value"})
-	if err != nil {
-		t.Fatalf("acpLabelSession: %v", err)
-	}
-}
 
 func TestClientLaunchAgent(t *testing.T) {
 	// Mock ACP server
 	acpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && strings.Contains(r.URL.Path, "/v1/sessions") {
+		if r.Method == "POST" && r.URL.Path == testSessionsPath {
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"id": "new-session-123"})
-			return
-		}
-		if r.Method == "PATCH" {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"id": "new-session-123"})
+			json.NewEncoder(w).Encode(backendCR("new-session-123", "pending", nil))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -1947,9 +1882,10 @@ func TestClientStopAgent(t *testing.T) {
 func TestStatusDoneOverride(t *testing.T) {
 	// Create a mock ACP server that reports session as "running"
 	mockACP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/sessions/") {
+		if strings.HasPrefix(r.URL.Path, "/api/projects/") && strings.Contains(r.URL.Path, "/agentic-sessions/") {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"status": "running"})
+			sessionName := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			json.NewEncoder(w).Encode(backendCR(sessionName, "running", nil))
 		}
 	}))
 	defer mockACP.Close()
@@ -2004,9 +1940,10 @@ func TestStatusDoneOverride(t *testing.T) {
 func TestStatusDoneAllowedWhenSessionStopped(t *testing.T) {
 	// Create a mock ACP server that reports session as "stopped"
 	mockACP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v1/sessions/") {
+		if strings.HasPrefix(r.URL.Path, "/api/projects/") && strings.Contains(r.URL.Path, "/agentic-sessions/") {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
+			sessionName := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			json.NewEncoder(w).Encode(backendCR(sessionName, "stopped", nil))
 		}
 	}))
 	defer mockACP.Close()
