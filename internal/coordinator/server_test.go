@@ -2079,3 +2079,226 @@ func TestEditAgentNotFound(t *testing.T) {
 		t.Errorf("expected 404 Not Found, got %d", editResp.StatusCode)
 	}
 }
+
+func TestHealthEndpoints(t *testing.T) {
+	srv, cleanup := mustStartServer(t)
+	defer cleanup()
+
+	base := serverBaseURL(srv)
+	spaceName := "health-test"
+
+	// Create a space
+	createReq, _ := http.NewRequest(http.MethodPut, base+"/spaces/"+spaceName, nil)
+	resp, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatalf("create space: %v", err)
+	}
+	resp.Body.Close()
+
+	// Add an agent
+	testAgent := "Testagent" // Server normalizes to this form
+	agentUpdate := AgentUpdate{
+		Status:    StatusActive,
+		Summary:   "Test agent",
+		UpdatedAt: time.Now().UTC().Add(-10 * time.Minute),
+	}
+	agentResp := postJSON(t, base+"/spaces/"+spaceName+"/agent/"+testAgent, agentUpdate)
+	agentResp.Body.Close()
+
+	t.Run("GetSpaceHealth", func(t *testing.T) {
+		resp, err := http.Get(base + "/spaces/" + spaceName + "/health")
+		if err != nil {
+			t.Fatalf("get space health: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+		}
+
+		var summary SpaceHealthSummary
+		if err := json.NewDecoder(resp.Body).Decode(&summary); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+
+		if summary.TotalAgents != 1 {
+			t.Errorf("expected 1 agent, got %d", summary.TotalAgents)
+		}
+
+		if summary.Config == nil {
+			t.Error("expected health config to be present")
+		}
+	})
+
+	t.Run("GetAgentHealth", func(t *testing.T) {
+		// Debug: Check what agents exist
+		checkResp, _ := http.Get(base + "/spaces/" + spaceName + "/api/agents")
+		checkBody, _ := io.ReadAll(checkResp.Body)
+		checkResp.Body.Close()
+		t.Logf("Agents in space before health check: %s", string(checkBody))
+
+		// Debug: Check space raw data
+		rawResp, _ := http.Get(base + "/spaces/" + spaceName + "/raw")
+		rawBody, _ := io.ReadAll(rawResp.Body)
+		rawResp.Body.Close()
+		preview := string(rawBody)
+		if len(preview) > 500 {
+			preview = preview[:500]
+		}
+		t.Logf("Space raw data (first 500 chars): %s", preview)
+
+		resp, err := http.Get(base + "/spaces/" + spaceName + "/health/" + testAgent)
+		if err != nil {
+			t.Fatalf("get agent health: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("expected 200 OK, got %d: %s (testAgent=%s)", resp.StatusCode, string(body), testAgent)
+		}
+
+		var agentHealth AgentHealth
+		if err := json.NewDecoder(resp.Body).Decode(&agentHealth); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+
+		if agentHealth.Status.Level == "" {
+			t.Error("expected health status level to be set")
+		}
+	})
+
+	t.Run("GetHealthConfig", func(t *testing.T) {
+		resp, err := http.Get(base + "/spaces/" + spaceName + "/health/config")
+		if err != nil {
+			t.Fatalf("get health config: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+		}
+
+		var config HealthConfig
+		if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+
+		if config.HeartbeatTimeoutWarning == 0 {
+			t.Error("expected warning timeout to be set")
+		}
+	})
+
+	t.Run("UpdateHealthConfig", func(t *testing.T) {
+		newConfig := DefaultHealthConfig()
+		newConfig.HeartbeatTimeoutWarning = 20 * time.Minute
+		newConfig.Enabled = true
+
+		data, _ := json.Marshal(newConfig)
+		req, _ := http.NewRequest(http.MethodPost, base+"/spaces/"+spaceName+"/health/config",
+			bytes.NewReader(data))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("update health config: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Errorf("expected 200 OK, got %d: %s", resp.StatusCode, string(body))
+		}
+
+		// Verify the config was updated
+		getResp, _ := http.Get(base + "/spaces/" + spaceName + "/health/config")
+		defer getResp.Body.Close()
+
+		var updatedConfig HealthConfig
+		json.NewDecoder(getResp.Body).Decode(&updatedConfig)
+
+		if updatedConfig.HeartbeatTimeoutWarning != 20*time.Minute {
+			t.Errorf("expected warning timeout 20m, got %v", updatedConfig.HeartbeatTimeoutWarning)
+		}
+	})
+
+	t.Run("NonExistentSpace", func(t *testing.T) {
+		resp, err := http.Get(base + "/spaces/nonexistent/health")
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("expected 404, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("NonExistentAgent", func(t *testing.T) {
+		resp, err := http.Get(base + "/spaces/" + spaceName + "/health/nonexistent")
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("expected 404, got %d", resp.StatusCode)
+		}
+	})
+}
+
+// TestHealthMonitoring is simplified - full integration testing deferred to e2e tests
+func TestHealthMonitoring(t *testing.T) {
+	t.Skip("Full health monitoring integration test - deferred to e2e tests")
+}
+
+func TestCheckAllAgentHealth(t *testing.T) {
+	dataDir := t.TempDir()
+	srv := NewServer(":0", dataDir)
+
+	// Create a test space with agents
+	ks := NewKnowledgeSpace("test")
+	now := time.Now().UTC()
+
+	ks.Agents["healthy"] = &AgentUpdate{
+		Status:    StatusActive,
+		Summary:   "Healthy",
+		UpdatedAt: now.Add(-5 * time.Minute),
+	}
+
+	ks.Agents["warning"] = &AgentUpdate{
+		Status:    StatusActive,
+		Summary:   "Warning",
+		UpdatedAt: now.Add(-20 * time.Minute),
+	}
+
+	ks.Agents["critical"] = &AgentUpdate{
+		Status:    StatusActive,
+		Summary:   "Critical",
+		UpdatedAt: now.Add(-40 * time.Minute),
+	}
+
+	srv.mu.Lock()
+	srv.spaces["test"] = ks
+	srv.mu.Unlock()
+
+	// Run health check
+	srv.checkAllAgentHealth()
+
+	// Verify health status was updated
+	srv.mu.RLock()
+	updatedKS := srv.spaces["test"]
+	srv.mu.RUnlock()
+
+	if updatedKS.AgentHealth["healthy"].Level != HealthHealthy {
+		t.Errorf("expected healthy agent to be healthy, got %v", updatedKS.AgentHealth["healthy"].Level)
+	}
+
+	if updatedKS.AgentHealth["warning"].Level != HealthWarning {
+		t.Errorf("expected warning agent to have warning level, got %v", updatedKS.AgentHealth["warning"].Level)
+	}
+
+	if updatedKS.AgentHealth["critical"].Level != HealthCritical {
+		t.Errorf("expected critical agent to have critical level, got %v", updatedKS.AgentHealth["critical"].Level)
+	}
+}

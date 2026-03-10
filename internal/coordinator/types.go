@@ -82,21 +82,27 @@ type Table struct {
 }
 
 type KnowledgeSpace struct {
-	Name            string                  `json:"name"`
-	Agents          map[string]*AgentUpdate `json:"agents"`
-	SharedContracts string                  `json:"shared_contracts,omitempty"`
-	Archive         string                  `json:"archive,omitempty"`
-	CreatedAt       time.Time               `json:"created_at"`
-	UpdatedAt       time.Time               `json:"updated_at"`
+	Name            string                    `json:"name"`
+	Agents          map[string]*AgentUpdate   `json:"agents"`
+	SharedContracts string                    `json:"shared_contracts,omitempty"`
+	Archive         string                    `json:"archive,omitempty"`
+	HealthConfig    *HealthConfig             `json:"health_config,omitempty"`
+	AgentHealth     map[string]*HealthStatus  `json:"agent_health,omitempty"`
+	HealthEvents    []HealthEvent             `json:"health_events,omitempty"`
+	CreatedAt       time.Time                 `json:"created_at"`
+	UpdatedAt       time.Time                 `json:"updated_at"`
 }
 
 func NewKnowledgeSpace(name string) *KnowledgeSpace {
 	now := time.Now().UTC()
 	return &KnowledgeSpace{
-		Name:      name,
-		Agents:    make(map[string]*AgentUpdate),
-		CreatedAt: now,
-		UpdatedAt: now,
+		Name:         name,
+		Agents:       make(map[string]*AgentUpdate),
+		HealthConfig: DefaultHealthConfig(),
+		AgentHealth:  make(map[string]*HealthStatus),
+		HealthEvents: []HealthEvent{},
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 }
 

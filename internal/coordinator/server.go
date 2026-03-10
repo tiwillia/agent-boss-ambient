@@ -513,6 +513,30 @@ func (s *Server) handleSpaceRoute(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.NotFound(w, r)
 		}
+	case "health":
+		if len(parts) == 2 || (len(parts) == 3 && parts[2] == "") {
+			// GET /spaces/{space}/health - overall space health
+			// POST /spaces/{space}/health/config - update health config
+			if r.Method == http.MethodPost {
+				s.handleHealthConfigUpdate(w, r, spaceName)
+			} else {
+				s.handleSpaceHealth(w, r, spaceName)
+			}
+		} else if len(parts) == 3 {
+			if parts[2] == "config" {
+				if r.Method == http.MethodPost {
+					s.handleHealthConfigUpdate(w, r, spaceName)
+				} else {
+					s.handleGetHealthConfig(w, r, spaceName)
+				}
+			} else {
+				// GET /spaces/{space}/health/{agent} - individual agent health
+				agentName := strings.TrimRight(parts[2], "/")
+				s.handleAgentHealth(w, r, spaceName, agentName)
+			}
+		} else {
+			http.NotFound(w, r)
+		}
 	default:
 		http.NotFound(w, r)
 	}
@@ -1716,6 +1740,7 @@ func (s *Server) heartbeatLoop() {
 			return
 		case <-ticker.C:
 			s.checkHeartbeats()
+			s.checkAllAgentHealth() // Comprehensive health monitoring
 		}
 	}
 }
@@ -1820,6 +1845,115 @@ func (s *Server) checkAllSessionLiveness() {
 	}
 }
 
+// checkAllAgentHealth performs comprehensive health monitoring across all spaces
+func (s *Server) checkAllAgentHealth() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for spaceName, ks := range s.spaces {
+		if ks.HealthConfig == nil || !ks.HealthConfig.Enabled {
+			continue
+		}
+
+		// Update health status for all agents
+		for agentName, agent := range ks.Agents {
+			// Initialize health status if needed
+			if ks.AgentHealth == nil {
+				ks.AgentHealth = make(map[string]*HealthStatus)
+			}
+			if ks.AgentHealth[agentName] == nil {
+				ks.AgentHealth[agentName] = NewHealthStatus()
+			}
+
+			healthStatus := ks.AgentHealth[agentName]
+			previousLevel := healthStatus.Level
+
+			// Update health based on current state
+			healthStatus.UpdateHealth(agent.UpdatedAt, agent.Status, ks.HealthConfig)
+
+			// Check if health level changed and take recovery actions
+			if previousLevel != healthStatus.Level && healthStatus.Level != HealthHealthy {
+				s.executeRecoveryActions(spaceName, agentName, healthStatus, ks.HealthConfig, agent)
+			}
+
+			// Update session phase if available
+			if agent.ACPSessionID != "" && acpAvailable(s.acpConfig) {
+				if phase, err := acpGetSessionPhase(s.acpConfig, agent.ACPSessionID); err == nil {
+					healthStatus.SessionPhase = phase
+				}
+			}
+		}
+
+		// Save the space with updated health data
+		if err := s.saveSpace(ks); err != nil {
+			s.logEvent(fmt.Sprintf("[%s] failed to save health data: %v", spaceName, err))
+		}
+
+		// Broadcast health update to connected clients
+		summary := ComputeSpaceHealth(ks)
+		if data, err := json.Marshal(summary); err == nil {
+			s.broadcastSSE(spaceName, "health_update", string(data))
+		}
+	}
+}
+
+// executeRecoveryActions performs configured recovery actions when health issues are detected
+// NOTE: Caller must hold s.mu lock
+func (s *Server) executeRecoveryActions(spaceName, agentName string, health *HealthStatus, config *HealthConfig, agent *AgentUpdate) {
+	for _, issue := range health.Issues {
+		// Determine the event type from the issue
+		var eventType string
+		var action RecoveryAction
+
+		if contains(health.Issues, "critical threshold") {
+			eventType = "heartbeat_timeout_critical"
+		} else if contains(health.Issues, "warning threshold") {
+			eventType = "heartbeat_timeout_warning"
+		} else if contains(health.Issues, "stuck in blocked") {
+			eventType = "blocked_timeout"
+		} else if contains(health.Issues, "error status") {
+			eventType = "error_status"
+		} else {
+			eventType = "unknown"
+		}
+
+		// Get configured action for this event type
+		if configuredAction, ok := config.RecoveryActions[eventType]; ok {
+			action = configuredAction
+		} else {
+			action = ActionNotify // default action
+		}
+
+		// Record the health event (caller already holds lock)
+		ks := s.spaces[spaceName]
+		RecordHealthEvent(ks, agentName, eventType, health.Level, issue, action)
+
+		// Execute the recovery action
+		switch action {
+		case ActionNotify:
+			s.logEvent(fmt.Sprintf("[%s/%s] HEALTH %s: %s", spaceName, agentName, health.Level, issue))
+
+		case ActionNotifyAndFlag:
+			s.logEvent(fmt.Sprintf("[%s/%s] HEALTH %s (FLAGGED): %s", spaceName, agentName, health.Level, issue))
+			// Flag is already set in HealthStatus
+
+		case ActionStopSession:
+			if agent.ACPSessionID != "" && acpAvailable(s.acpConfig) {
+				if err := acpStopSession(s.acpConfig, agent.ACPSessionID); err != nil {
+					s.logEvent(fmt.Sprintf("[%s/%s] failed to stop session: %v", spaceName, agentName, err))
+				} else {
+					s.logEvent(fmt.Sprintf("[%s/%s] session stopped due to health issue", spaceName, agentName))
+				}
+			}
+
+		case ActionRestartSession:
+			// Note: Restart requires stop + new session creation
+			// This is a placeholder for future ACP integration
+			s.logEvent(fmt.Sprintf("[%s/%s] session restart requested (not yet implemented)", spaceName, agentName))
+		}
+	}
+}
+
 func (s *Server) recordDecisionInterrupts(spaceName, agentName string, update *AgentUpdate) {
 	for _, q := range update.Questions {
 		ctx := map[string]string{}
@@ -1894,6 +2028,131 @@ func sanitizeAgentUpdate(u *AgentUpdate) {
 			u.Sections[si].Items[i] = sanitizeInput(item)
 		}
 	}
+}
+
+// handleSpaceHealth returns the overall health summary for a space
+func (s *Server) handleSpaceHealth(w http.ResponseWriter, r *http.Request, spaceName string) {
+	s.mu.RLock()
+	ks, ok := s.spaces[spaceName]
+	s.mu.RUnlock()
+
+	if !ok {
+		http.Error(w, "space not found", http.StatusNotFound)
+		return
+	}
+
+	summary := ComputeSpaceHealth(ks)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(summary)
+}
+
+// handleAgentHealth returns health status for a specific agent
+func (s *Server) handleAgentHealth(w http.ResponseWriter, r *http.Request, spaceName, agentName string) {
+	s.mu.RLock()
+	ks, ok := s.spaces[spaceName]
+	s.mu.RUnlock()
+
+	if !ok {
+		http.Error(w, "space not found", http.StatusNotFound)
+		return
+	}
+
+	agent, ok := ks.Agents[agentName]
+	if !ok {
+		http.Error(w, "agent not found", http.StatusNotFound)
+		return
+	}
+
+	// Ensure health tracking is initialized
+	if ks.AgentHealth == nil {
+		ks.AgentHealth = make(map[string]*HealthStatus)
+	}
+	if ks.AgentHealth[agentName] == nil {
+		ks.AgentHealth[agentName] = NewHealthStatus()
+	}
+
+	healthStatus := ks.AgentHealth[agentName]
+	if ks.HealthConfig != nil {
+		healthStatus.UpdateHealth(agent.UpdatedAt, agent.Status, ks.HealthConfig)
+	}
+
+	// Build comprehensive agent health response
+	agentHealth := &AgentHealth{
+		Status: *healthStatus,
+		RecentEvents: []HealthEvent{},
+	}
+
+	// Include recent events for this agent
+	for i := len(ks.HealthEvents) - 1; i >= 0 && len(agentHealth.RecentEvents) < 10; i-- {
+		if ks.HealthEvents[i].Agent == agentName {
+			agentHealth.RecentEvents = append(agentHealth.RecentEvents, ks.HealthEvents[i])
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(agentHealth)
+}
+
+// handleGetHealthConfig returns the current health configuration for a space
+func (s *Server) handleGetHealthConfig(w http.ResponseWriter, r *http.Request, spaceName string) {
+	s.mu.RLock()
+	ks, ok := s.spaces[spaceName]
+	s.mu.RUnlock()
+
+	if !ok {
+		http.Error(w, "space not found", http.StatusNotFound)
+		return
+	}
+
+	config := ks.HealthConfig
+	if config == nil {
+		config = DefaultHealthConfig()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(config)
+}
+
+// handleHealthConfigUpdate updates the health configuration for a space
+func (s *Server) handleHealthConfigUpdate(w http.ResponseWriter, r *http.Request, spaceName string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var config HealthConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	ks, ok := s.spaces[spaceName]
+	if !ok {
+		s.mu.Unlock()
+		http.Error(w, "space not found", http.StatusNotFound)
+		return
+	}
+
+	ks.HealthConfig = &config
+	ks.UpdatedAt = time.Now().UTC()
+
+	if err := s.saveSpace(ks); err != nil {
+		s.mu.Unlock()
+		http.Error(w, fmt.Sprintf("failed to save config: %v", err), http.StatusInternalServerError)
+		return
+	}
+	s.mu.Unlock()
+
+	s.logEvent(fmt.Sprintf("[%s] health config updated", spaceName))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "ok",
+		"message": "health config updated",
+		"config": config,
+	})
 }
 
 func truncateLine(s string, maxLen int) string {
